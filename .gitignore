@@ -1,0 +1,12 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs/EAFCMatchTracker/CopilotIndices/17.14.786.1071
+/.vs/EAFCMatchTracker/config
+/.vs/EAFCMatchTracker/DesignTimeBuild
+/.vs/EAFCMatchTracker/FileContentIndex/25432e4f-57f3-400a-b39d-66384da56f1e.vsidx
+/.vs/EAFCMatchTracker/v17
+/.vs
+/bin/Debug/net7.0
+/obj
