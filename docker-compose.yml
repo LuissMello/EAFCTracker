@@ -1,0 +1,31 @@
+﻿version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: eafc-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: eafcdb
+    ports:
+     - "5433:5432" # Mapeia a porta 5432 do contêiner para a porta 5433 do host
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      - db
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__Default=Host=db;Port=5433;Database=eafcdb;Username=postgres;Password=postgres
+    ports:
+      - "5000:80"
+      - "5001:5001" # para debug remto do VS
+    volumes:
+      - .:/app:cached
+
+volumes:
+  postgres_data:
