@@ -20,6 +20,7 @@ public class MatchesController : ControllerBase
                 .ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers)
                 .ThenInclude(mp => mp.Player)
+                    .ThenInclude(p => p.PlayerMatchStats)
             .OrderByDescending(m => m.Timestamp)
             .ToListAsync();
 
@@ -72,6 +73,7 @@ public class MatchesController : ControllerBase
                     CrestAssetId = c.Details.CrestAssetId
                 }
             }).ToList(),
+
             Players = m.MatchPlayers.Select(p => new MatchPlayerDto
             {
                 PlayerId = p.Player.PlayerId,
@@ -100,7 +102,7 @@ public class MatchesController : ControllerBase
                 Wins = p.Wins,
                 Pos = p.Pos,
                 Namespace = p.Namespace,
-                Stats = new PlayerMatchStatsDto
+                Stats = p.Player.PlayerMatchStats == null ? null : new PlayerMatchStatsDto
                 {
                     Aceleracao = p.Player.PlayerMatchStats.Aceleracao,
                     Pique = p.Player.PlayerMatchStats.Pique,
@@ -142,6 +144,7 @@ public class MatchesController : ControllerBase
 
         return Ok(matchDtos);
     }
+
 
     [HttpGet("{matchId:long}")]
     public async Task<IActionResult> GetMatchById(long matchId)
