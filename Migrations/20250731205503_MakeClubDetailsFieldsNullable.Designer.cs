@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -10,9 +11,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EAFCMatchTracker.Migrations
 {
     [DbContext(typeof(EAFCContext))]
-    partial class EAFCContextModelSnapshot : ModelSnapshot
+    [Migration("20250731205503_MakeClubDetailsFieldsNullable")]
+    partial class MakeClubDetailsFieldsNullable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -23,8 +26,11 @@ namespace EAFCMatchTracker.Migrations
 
             modelBuilder.Entity("MatchClubEntity", b =>
                 {
-                    b.Property<long>("MatchId")
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
                     b.Property<long>("ClubId")
                         .HasColumnType("bigint");
@@ -41,11 +47,11 @@ namespace EAFCMatchTracker.Migrations
                     b.Property<short>("GoalsAgainst")
                         .HasColumnType("smallint");
 
-                    b.Property<long>("Id")
-                        .HasColumnType("bigint");
-
                     b.Property<short>("Losses")
                         .HasColumnType("smallint");
+
+                    b.Property<long>("MatchId")
+                        .HasColumnType("bigint");
 
                     b.Property<short>("MatchType")
                         .HasColumnType("smallint");
@@ -71,7 +77,9 @@ namespace EAFCMatchTracker.Migrations
                     b.Property<short>("Wins")
                         .HasColumnType("smallint");
 
-                    b.HasKey("MatchId", "ClubId");
+                    b.HasKey("Id");
+
+                    b.HasIndex("MatchId");
 
                     b.ToTable("MatchClubs");
                 });
@@ -218,9 +226,6 @@ namespace EAFCMatchTracker.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("PlayerId", "ClubId")
-                        .IsUnique();
-
                     b.ToTable("Players");
                 });
 
@@ -355,10 +360,7 @@ namespace EAFCMatchTracker.Migrations
 
                     b.OwnsOne("ClubDetailsEntity", "Details", b1 =>
                         {
-                            b1.Property<long>("MatchClubEntityMatchId")
-                                .HasColumnType("bigint");
-
-                            b1.Property<long>("MatchClubEntityClubId")
+                            b1.Property<long>("MatchClubEntityId")
                                 .HasColumnType("bigint");
 
                             b1.Property<long>("ClubId")
@@ -436,12 +438,12 @@ namespace EAFCMatchTracker.Migrations
                             b1.Property<long>("TeamId")
                                 .HasColumnType("bigint");
 
-                            b1.HasKey("MatchClubEntityMatchId", "MatchClubEntityClubId");
+                            b1.HasKey("MatchClubEntityId");
 
-                            b1.ToTable("MatchClubs");
+                            b1.ToTable("ClubDetails");
 
                             b1.WithOwner()
-                                .HasForeignKey("MatchClubEntityMatchId", "MatchClubEntityClubId");
+                                .HasForeignKey("MatchClubEntityId");
                         });
 
                     b.Navigation("Details")

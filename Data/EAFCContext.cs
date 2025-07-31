@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 
 public class EAFCContext : DbContext
 {
@@ -9,23 +9,13 @@ public class EAFCContext : DbContext
     public DbSet<MatchPlayerEntity> MatchPlayers { get; set; }
     public DbSet<PlayerEntity> Players { get; set; }
     public DbSet<PlayerMatchStatsEntity> PlayerMatchStats { get; set; }
-    public DbSet<ClubDetailsEntity> ClubDetails { get; set; }
-    //public DbSet<CustomKitEntity> CustomKits { get; set; }
+
+    // ⚠️ ClubDetailsEntity é uma owned type — não precisa (e não deve) ser um DbSet
+    // public DbSet<ClubDetailsEntity> ClubDetails { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<PlayerEntity>()
-            .HasKey(m => m.Id);
-
-        modelBuilder.Entity<PlayerEntity>()
-            .HasOne(p => p.PlayerMatchStats)
-            .WithOne(s => s.Player)
-            .HasForeignKey<PlayerMatchStatsEntity>(s => s.PlayerEntityId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        modelBuilder.Entity<MatchClubEntity>()
-            .OwnsOne(c => c.Details);
-
+        // Match
         modelBuilder.Entity<MatchEntity>()
             .HasKey(m => m.MatchId);
 
@@ -36,16 +26,37 @@ public class EAFCContext : DbContext
 
         modelBuilder.Entity<MatchEntity>()
             .HasMany(m => m.MatchPlayers)
-            .WithOne(p => p.Match)
-            .HasForeignKey(p => p.MatchId);
+            .WithOne(mp => mp.Match)
+            .HasForeignKey(mp => mp.MatchId);
 
+        // MatchClub + ClubDetails
+        modelBuilder.Entity<MatchClubEntity>()
+            .HasKey(mc => new { mc.MatchId, mc.ClubId });
+
+        modelBuilder.Entity<MatchClubEntity>()
+            .OwnsOne(mc => mc.Details, cb =>
+            {
+                cb.WithOwner(); // obrigatório para owned type
+                // opcional: cb.Property(d => d.Name).HasColumnName("ClubName"); etc.
+            });
+
+        // Player
+        modelBuilder.Entity<PlayerEntity>()
+            .HasKey(p => p.Id);
+
+        modelBuilder.Entity<PlayerEntity>()
+            .HasIndex(p => new { p.PlayerId, p.ClubId }) // garante unicidade lógica
+            .IsUnique();
+
+        modelBuilder.Entity<PlayerEntity>()
+            .HasOne(p => p.PlayerMatchStats)
+            .WithOne(s => s.Player)
+            .HasForeignKey<PlayerMatchStatsEntity>(s => s.PlayerEntityId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // MatchPlayer
         modelBuilder.Entity<MatchPlayerEntity>()
             .HasKey(mp => new { mp.MatchId, mp.PlayerEntityId });
-
-        modelBuilder.Entity<MatchPlayerEntity>()
-            .HasOne(mp => mp.Match)
-            .WithMany(m => m.MatchPlayers)
-            .HasForeignKey(mp => mp.MatchId);
 
         modelBuilder.Entity<MatchPlayerEntity>()
             .HasOne(mp => mp.Player)
