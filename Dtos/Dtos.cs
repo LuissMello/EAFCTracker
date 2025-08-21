@@ -288,3 +288,76 @@ public class MatchResultDto
     public string ResultText { get; set; } // Ex: "Team A 2 x 1 Team B"
 }
 
+public class CalendarDaySummaryDto
+{
+    public DateOnly Date { get; set; }
+    public int MatchesCount { get; set; }
+    public int Wins { get; set; }
+    public int Draws { get; set; }
+    public int Losses { get; set; }
+    public int GoalsFor { get; set; }
+    public int GoalsAgainst { get; set; }
+}
+
+public class CalendarMonthDto
+{
+    public int Year { get; set; }
+    public int Month { get; set; }
+    public List<CalendarDaySummaryDto> Days { get; set; } = new();
+}
+
+public class CalendarMatchStatLineDto
+{
+    public int TotalGoals { get; set; }
+    public int TotalAssists { get; set; }
+    public int TotalShots { get; set; }
+    public int TotalPassesMade { get; set; }
+    public int TotalPassAttempts { get; set; }
+    public int TotalTacklesMade { get; set; }
+    public int TotalTackleAttempts { get; set; }
+    public int TotalRedCards { get; set; }
+    public int TotalSaves { get; set; }
+    public int TotalMom { get; set; }
+
+    public double PassAccuracyPercent { get; set; }
+    public double TackleSuccessPercent { get; set; }
+    public double GoalAccuracyPercent { get; set; }
+    public double AvgRating { get; set; }
+}
+
+public class CalendarMatchSummaryDto
+{
+    public long MatchId { get; set; }
+    public DateTime Timestamp { get; set; }
+
+    // lado A
+    public long ClubAId { get; set; }
+    public string ClubAName { get; set; }
+    public int ClubAGoals { get; set; }
+    public string? ClubACrestAssetId { get; set; }
+
+    // lado B
+    public long ClubBId { get; set; }
+    public string ClubBName { get; set; }
+    public int ClubBGoals { get; set; }
+    public string? ClubBCrestAssetId { get; set; }
+
+    // resultado do ponto de vista do clubId consultado
+    // "W" = vitória, "D" = empate, "L" = derrota
+    public string ResultForClub { get; set; }
+
+    // estatísticas agregadas do jogo (soma dos jogadores)
+    public CalendarMatchStatLineDto Stats { get; set; }
+}
+
+public class CalendarDayDetailsDto
+{
+    public DateOnly Date { get; set; }
+    public int TotalMatches { get; set; }
+    public int Wins { get; set; }
+    public int Draws { get; set; }
+    public int Losses { get; set; }
+    public int GoalsFor { get; set; }
+    public int GoalsAgainst { get; set; }
+    public List<CalendarMatchSummaryDto> Matches { get; set; } = new();
+}
