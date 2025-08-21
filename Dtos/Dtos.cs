@@ -361,3 +361,10 @@ public class CalendarDayDetailsDto
     public int GoalsAgainst { get; set; }
     public List<CalendarMatchSummaryDto> Matches { get; set; } = new();
 }
+
+public sealed class ClubListItemDto
+{
+    public long ClubId { get; init; }
+    public string Name { get; init; } = default!;
+    public string? CrestAssetId { get; init; }
+}
