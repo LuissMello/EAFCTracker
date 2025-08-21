@@ -16,8 +16,12 @@ public class CalendarController : ControllerBase
     public async Task<ActionResult<CalendarMonthDto>> GetMonthlyCalendar(
         [FromQuery] int year,
         [FromQuery] int month,
-        [FromQuery] long clubId = 3463149)
+        [FromQuery] long clubId)
     {
+
+        if (clubId <= 0)
+            return BadRequest("ID do clube inválido.");
+
         if (year <= 0 || month < 1 || month > 12)
             return BadRequest("Parâmetros de data inválidos.");
 
@@ -26,14 +30,16 @@ public class CalendarController : ControllerBase
 
         var monthlyMatches = await _context.Matches
             .Where(m => m.Timestamp >= startDate && m.Timestamp < endDate)
-            .Include(m => m.Clubs)
-                .ThenInclude(c => c.Details)
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
+            .Include(m => m.Clubs).ThenInclude(c => c.Details)
+            .AsNoTracking()
             .ToListAsync();
 
         var dailySummaries = monthlyMatches
             .GroupBy(m => DateOnly.FromDateTime(m.Timestamp.Date))
             .Select(group => BuildDaySummary(group, clubId))
-            .OrderBy(summary => summary.Date)
+            .Where(s => s.MatchesCount > 0) // evita dias vazios
+            .OrderBy(s => s.Date)
             .ToList();
 
         return Ok(new CalendarMonthDto
@@ -47,13 +53,17 @@ public class CalendarController : ControllerBase
     [HttpGet("day")]
     public async Task<ActionResult<CalendarDayDetailsDto>> GetDayDetails(
         [FromQuery] DateOnly date,
-        [FromQuery] long clubId = 3463149)
+        [FromQuery] long clubId)
     {
+        if (clubId <= 0)
+            return BadRequest("ID do clube inválido."); 
+
         var dayStart = date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         var dayEnd = dayStart.AddDays(1);
 
         var matchesOfDay = await _context.Matches
             .Where(m => m.Timestamp >= dayStart && m.Timestamp < dayEnd)
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
             .Include(m => m.Clubs)
                 .ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers)

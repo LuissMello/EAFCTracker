@@ -545,17 +545,18 @@ public class MatchesController : ControllerBase
     }
 
     [HttpGet("statistics/limited")]
-    public async Task<IActionResult> GetMatchStatisticsLimited([FromQuery] int count = 10)
+    public async Task<IActionResult> GetMatchStatisticsLimited([FromQuery] long clubId, [FromQuery] int count = 10)
     {
-        if (count <= 0)
-            return BadRequest("O número de partidas deve ser maior que zero.");
+        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+        if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
 
+        // Partidas onde o clube informado participou
         var matches = await _dbContext.Matches
-            .Include(m => m.Clubs.Where(c => c.ClubId == 3463149))
+            .Include(m => m.Clubs.Where(c => c.ClubId == clubId))
                 .ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers)
                 .ThenInclude(mp => mp.Player)
-            .Where(m => m.Clubs.Any(c => c.ClubId == 3463149))
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
             .OrderByDescending(m => m.Timestamp)
             .Take(count)
             .ToListAsync();
@@ -563,23 +564,23 @@ public class MatchesController : ControllerBase
         if (!matches.Any())
             return Ok(new FullMatchStatisticsDto());
 
+        // Só jogadores do clube informado
         var allPlayers = matches.SelectMany(m => m.MatchPlayers)
-            .Where(e => e.Player.ClubId == 3463149)
+            .Where(e => e.Player.ClubId == clubId)
             .ToList();
 
         if (!allPlayers.Any())
             return Ok(new FullMatchStatisticsDto());
 
-        int totalPlayers = allPlayers.Select(p => p.PlayerEntityId).Distinct().Count();
-        int totalMatchesPlayed = allPlayers.Count;
+        int distinctPlayersCount = allPlayers.Select(p => p.PlayerEntityId).Distinct().Count();
+        int totalRows = allPlayers.Count;
 
-        // Agrupando por jogador
         var playersStats = allPlayers
             .GroupBy(p => p.PlayerEntityId)
             .Select(g =>
             {
                 var player = g.First().Player;
-                int matches = g.Count();
+                int matchesPlayed = g.Count();
                 int goals = g.Sum(p => p.Goals);
                 int shots = g.Sum(p => p.Shots);
                 int passesMade = g.Sum(p => p.Passesmade);
@@ -588,14 +589,14 @@ public class MatchesController : ControllerBase
                 int tackleAttempts = g.Sum(p => p.Tackleattempts);
                 int wins = g.Sum(p => p.Wins);
                 int losses = g.Sum(p => p.Losses);
-                int draws = matches - wins - losses;
+                int draws = matchesPlayed - wins - losses;
 
                 return new PlayerStatisticsDto
                 {
                     PlayerId = g.Key,
                     PlayerName = player?.Playername ?? "Unknown",
                     ClubId = player.ClubId,
-                    MatchesPlayed = matches,
+                    MatchesPlayed = matchesPlayed,
                     TotalGoals = goals,
                     TotalAssists = g.Sum(p => p.Assists),
                     TotalShots = shots,
@@ -614,22 +615,19 @@ public class MatchesController : ControllerBase
                     PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
                     TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
                     GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0,
-                    WinPercent = matches > 0 ? (wins * 100.0) / matches : 0
+                    WinPercent = matchesPlayed > 0 ? (wins * 100.0) / matchesPlayed : 0
                 };
             })
             .OrderByDescending(p => p.MatchesPlayed)
             .ToList();
 
-        // Agora, agregamos as estatísticas do clube a partir dos dados dos jogadores
+        // Agregação por clube (a coleção deve ter 1 clube, o informado)
         var clubsStats = allPlayers
             .GroupBy(p => p.ClubId)
             .Select(g =>
             {
-                // Número de jogadores no clube
-                int totalPlayers = g.Select(p => p.PlayerEntityId).Distinct().Count();
-
-                // Estatísticas totais (somadas)
-                int totalMatches = g.Count() / totalPlayers; // Total de partidas jogadas pelos jogadores
+                int playersInClub = g.Select(p => p.PlayerEntityId).Distinct().Count();
+                int totalMatches = playersInClub > 0 ? g.Count() / playersInClub : 0;
                 int totalGoals = g.Sum(p => p.Goals);
                 int totalShots = g.Sum(p => p.Shots);
                 int totalPassesMade = g.Sum(p => p.Passesmade);
@@ -638,33 +636,21 @@ public class MatchesController : ControllerBase
                 int totalTackleAttempts = g.Sum(p => p.Tackleattempts);
                 int totalWins = g.Sum(p => p.Wins);
                 int totalLosses = g.Sum(p => p.Losses);
-
-                // Calculando empates
                 int totalDraws = totalMatches - totalWins - totalLosses;
 
-                // Calculando as médias
-                double avgWins = totalPlayers > 0 ? (double)totalWins / totalPlayers : 0;
-                double avgLosses = totalPlayers > 0 ? (double)totalLosses / totalPlayers : 0;
-                double avgDraws = totalMatches - avgWins - avgLosses;
+                double avgRating = g.Any() ? g.Average(p => p.Rating) : 0;
 
-                // Calculando percentuais de vitórias, derrotas e empates
-                double winPercent = totalMatches > 0 ? (avgWins * 100.0) / totalMatches : 0;
-                double lossPercent = totalMatches > 0 ? (avgLosses * 100.0) / totalMatches : 0;
-                double drawPercent = totalMatches > 0 ? (avgDraws * 100.0) / totalMatches : 0;
-
-                // Calculando a média de avaliações
-                double avgRating = g.Average(p => p.Rating);
-
-                // Calculando percentuais de passes e desarmes
-                double passAccuracyPercent = totalPassAttempts > 0 ? (totalPassesMade * 100.0) / totalPassAttempts : 0;
-                double tackleSuccessPercent = totalTackleAttempts > 0 ? (totalTacklesMade * 100.0) / totalTackleAttempts : 0;
-                double goalAccuracyPercent = totalShots > 0 ? (totalGoals * 100.0) / totalShots : 0;
+                // Nome e crest do clube (se existir nas partidas)
+                var clubRow = _dbContext.MatchClubs.FirstOrDefault(c => c.Details.ClubId == g.Key);
+                var clubName = clubRow?.Details?.Name ?? $"Clube {g.Key}";
+                var crestAssetId = clubRow?.Details?.CrestAssetId;
 
                 return new ClubStatisticsDto
                 {
                     ClubId = g.Key,
-                    ClubName = $"Clube {g.Key}",
-                    MatchesPlayed = totalMatches, // Total de partidas
+                    ClubName = clubName,
+                    ClubCrestAssetId = crestAssetId,
+                    MatchesPlayed = totalMatches,
                     TotalGoals = totalGoals,
                     TotalAssists = g.Sum(p => p.Assists),
                     TotalShots = totalShots,
@@ -672,42 +658,39 @@ public class MatchesController : ControllerBase
                     TotalPassAttempts = totalPassAttempts,
                     TotalTacklesMade = totalTacklesMade,
                     TotalTackleAttempts = totalTackleAttempts,
-                    TotalWins = avgWins, // Número de vitórias do clube
-                    TotalLosses = avgLosses, // Número de derrotas
-                    TotalDraws = avgDraws, // Número de empates
+                    TotalWins = totalWins,
+                    TotalLosses = totalLosses,
+                    TotalDraws = totalDraws,
                     TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
                     TotalRedCards = g.Sum(p => p.Redcards),
                     TotalSaves = g.Sum(p => p.Saves),
                     TotalMom = g.Count(p => p.Mom),
                     AvgRating = avgRating,
-                    WinPercent = winPercent, // Percentual de vitórias
-                    PassAccuracyPercent = passAccuracyPercent, // Percentual de precisão de passes
-                    TackleSuccessPercent = tackleSuccessPercent, // Percentual de precisão de desarmes
-                    GoalAccuracyPercent = goalAccuracyPercent // Percentual de precisão de gols
+                    WinPercent = totalMatches > 0 ? (totalWins * 100.0) / totalMatches : 0,
+                    PassAccuracyPercent = totalPassAttempts > 0 ? (totalPassesMade * 100.0) / totalPassAttempts : 0,
+                    TackleSuccessPercent = totalTackleAttempts > 0 ? (totalTacklesMade * 100.0) / totalTackleAttempts : 0,
+                    GoalAccuracyPercent = totalShots > 0 ? (totalGoals * 100.0) / totalShots : 0
                 };
             })
-            .OrderByDescending(c => c.MatchesPlayed) // Ordena pelo número de partidas jogadas
+            .OrderByDescending(c => c.MatchesPlayed)
             .ToList();
 
+        // Totais gerais (do clube informado)
+        int sumPassAttempts = clubsStats.Sum(c => c.TotalPassAttempts);
+        int sumTackleAttempts = clubsStats.Sum(c => c.TotalTackleAttempts);
+        int sumShots = clubsStats.Sum(c => c.TotalShots);
 
-        // Agora, precisamos garantir que a soma de tentativas de passes, desarmes e chutes
-        // sejam corretamente somadas para o cálculo geral do clube.
-        int totalPassAttempts = clubsStats.Sum(c => c.TotalPassAttempts);
-        int totalTackleAttempts = clubsStats.Sum(c => c.TotalTackleAttempts);
-        int totalShots = clubsStats.Sum(c => c.TotalShots);
-
-        // Estatísticas gerais (para o clube)
         var overallStats = new MatchStatisticsDto
         {
             TotalMatches = matches.Count,
-            TotalPlayers = totalPlayers,
+            TotalPlayers = distinctPlayersCount,
             TotalGoals = playersStats.Sum(p => p.TotalGoals),
             TotalAssists = playersStats.Sum(p => p.TotalAssists),
-            TotalShots = totalShots, // Usando o valor somado de chutes
+            TotalShots = sumShots,
             TotalPassesMade = playersStats.Sum(p => p.TotalPassesMade),
-            TotalPassAttempts = totalPassAttempts, // Usando o valor somado de tentativas de passes
+            TotalPassAttempts = sumPassAttempts,
             TotalTacklesMade = playersStats.Sum(p => p.TotalTacklesMade),
-            TotalTackleAttempts = totalTackleAttempts, // Usando o valor somado de tentativas de desarmes
+            TotalTackleAttempts = sumTackleAttempts,
             TotalRating = playersStats.Sum(p => p.AvgRating),
             TotalWins = playersStats.Sum(p => p.TotalWins),
             TotalLosses = playersStats.Sum(p => p.TotalLosses),
@@ -717,17 +700,16 @@ public class MatchesController : ControllerBase
             TotalSaves = playersStats.Sum(p => p.TotalSaves),
             TotalMom = playersStats.Sum(p => p.TotalMom),
 
-            WinPercent = totalMatchesPlayed > 0 ? (playersStats.Sum(p => p.TotalWins) * 100.0) / totalMatchesPlayed : 0,
-            LossPercent = totalMatchesPlayed > 0 ? (playersStats.Sum(p => p.TotalLosses) * 100.0) / totalMatchesPlayed : 0,
-            DrawPercent = totalMatchesPlayed > 0 ? (playersStats.Sum(p => p.TotalDraws) * 100.0) / totalMatchesPlayed : 0,
-            CleanSheetsPercent = totalMatchesPlayed > 0 ? (playersStats.Sum(p => p.TotalCleanSheets) * 100.0) / totalMatchesPlayed : 0,
-            MomPercent = totalMatchesPlayed > 0 ? (playersStats.Sum(p => p.TotalMom) * 100.0) / totalMatchesPlayed : 0,
-            PassAccuracyPercent = totalPassAttempts > 0 ? (playersStats.Sum(p => p.TotalPassesMade) * 100.0) / totalPassAttempts : 0,
-            TackleSuccessPercent = totalTackleAttempts > 0 ? (playersStats.Sum(p => p.TotalTacklesMade) * 100.0) / totalTackleAttempts : 0,
-            GoalAccuracyPercent = totalShots > 0 ? (playersStats.Sum(p => p.TotalGoals) * 100.0) / totalShots : 0
+            WinPercent = totalRows > 0 ? (playersStats.Sum(p => p.TotalWins) * 100.0) / totalRows : 0,
+            LossPercent = totalRows > 0 ? (playersStats.Sum(p => p.TotalLosses) * 100.0) / totalRows : 0,
+            DrawPercent = totalRows > 0 ? (playersStats.Sum(p => p.TotalDraws) * 100.0) / totalRows : 0,
+            CleanSheetsPercent = totalRows > 0 ? (playersStats.Sum(p => p.TotalCleanSheets) * 100.0) / totalRows : 0,
+            MomPercent = totalRows > 0 ? (playersStats.Sum(p => p.TotalMom) * 100.0) / totalRows : 0,
+            PassAccuracyPercent = sumPassAttempts > 0 ? (playersStats.Sum(p => p.TotalPassesMade) * 100.0) / sumPassAttempts : 0,
+            TackleSuccessPercent = sumTackleAttempts > 0 ? (playersStats.Sum(p => p.TotalTacklesMade) * 100.0) / sumTackleAttempts : 0,
+            GoalAccuracyPercent = sumShots > 0 ? (playersStats.Sum(p => p.TotalGoals) * 100.0) / sumShots : 0
         };
 
-        // Retorna o resultado final
         return Ok(new FullMatchStatisticsDto
         {
             Overall = overallStats,
@@ -738,27 +720,28 @@ public class MatchesController : ControllerBase
 
 
     [HttpGet("statistics")]
-    public async Task<IActionResult> GetMatchStatistics()
+    public async Task<IActionResult> GetMatchStatistics([FromQuery] long clubId)
     {
+        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+
         var matches = await _dbContext.Matches
-            .Include(m => m.Clubs.Where(c => c.ClubId == 3463149))
+            .Include(m => m.Clubs.Where(c => c.ClubId == clubId))
                 .ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers)
                 .ThenInclude(mp => mp.Player)
-            .Where(m => m.Clubs.Any(c => c.ClubId == 3463149))
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
             .OrderByDescending(m => m.Timestamp)
             .ToListAsync();
 
         var allPlayers = matches.SelectMany(m => m.MatchPlayers)
-            .Where(e => e.Player.ClubId == 3463149)
+            .Where(e => e.Player.ClubId == clubId)
             .ToList();
 
         if (!allPlayers.Any())
             return Ok(new FullMatchStatisticsDto());
 
-        int totalPlayers = allPlayers.Select(p => p.PlayerEntityId).Distinct().Count();
-
-        int totalMatchesPlayed = allPlayers.Count;
+        int distinctPlayers = allPlayers.Select(p => p.PlayerEntityId).Distinct().Count();
+        int totalRows = allPlayers.Count;
 
         int totalGoals = allPlayers.Sum(p => p.Goals);
         int totalAssists = allPlayers.Sum(p => p.Assists);
@@ -774,13 +757,12 @@ public class MatchesController : ControllerBase
         int totalRedCards = allPlayers.Sum(p => p.Redcards);
         int totalSaves = allPlayers.Sum(p => p.Saves);
         int totalMom = allPlayers.Count(p => p.Mom);
-
-        int totalDraws = totalMatchesPlayed - totalWins - totalLosses;
+        int totalDraws = totalRows - totalWins - totalLosses;
 
         var overallStats = new MatchStatisticsDto
         {
             TotalMatches = matches.Count,
-            TotalPlayers = totalPlayers,
+            TotalPlayers = distinctPlayers,
             TotalGoals = totalGoals,
             TotalAssists = totalAssists,
             TotalShots = totalShots,
@@ -797,23 +779,23 @@ public class MatchesController : ControllerBase
             TotalSaves = totalSaves,
             TotalMom = totalMom,
 
-            AvgGoals = totalMatchesPlayed > 0 ? totalGoals / (double)totalMatchesPlayed : 0,
-            AvgAssists = totalMatchesPlayed > 0 ? totalAssists / (double)totalMatchesPlayed : 0,
-            AvgShots = totalMatchesPlayed > 0 ? totalShots / (double)totalMatchesPlayed : 0,
-            AvgPassesMade = totalMatchesPlayed > 0 ? totalPassesMade / (double)totalMatchesPlayed : 0,
-            AvgPassAttempts = totalMatchesPlayed > 0 ? totalPassAttempts / (double)totalMatchesPlayed : 0,
-            AvgTacklesMade = totalMatchesPlayed > 0 ? totalTacklesMade / (double)totalMatchesPlayed : 0,
-            AvgTackleAttempts = totalMatchesPlayed > 0 ? totalTackleAttempts / (double)totalMatchesPlayed : 0,
-            AvgRating = totalMatchesPlayed > 0 ? totalRating / totalMatchesPlayed : 0,
-            AvgRedCards = totalMatchesPlayed > 0 ? totalRedCards / (double)totalMatchesPlayed : 0,
-            AvgSaves = totalMatchesPlayed > 0 ? totalSaves / (double)totalMatchesPlayed : 0,
-            AvgMom = totalMatchesPlayed > 0 ? totalMom / (double)totalMatchesPlayed : 0,
+            AvgGoals = totalRows > 0 ? totalGoals / (double)totalRows : 0,
+            AvgAssists = totalRows > 0 ? totalAssists / (double)totalRows : 0,
+            AvgShots = totalRows > 0 ? totalShots / (double)totalRows : 0,
+            AvgPassesMade = totalRows > 0 ? totalPassesMade / (double)totalRows : 0,
+            AvgPassAttempts = totalRows > 0 ? totalPassAttempts / (double)totalRows : 0,
+            AvgTacklesMade = totalRows > 0 ? totalTacklesMade / (double)totalRows : 0,
+            AvgTackleAttempts = totalRows > 0 ? totalTackleAttempts / (double)totalRows : 0,
+            AvgRating = totalRows > 0 ? totalRating / totalRows : 0,
+            AvgRedCards = totalRows > 0 ? totalRedCards / (double)totalRows : 0,
+            AvgSaves = totalRows > 0 ? totalSaves / (double)totalRows : 0,
+            AvgMom = totalRows > 0 ? totalMom / (double)totalRows : 0,
 
-            WinPercent = totalMatchesPlayed > 0 ? (totalWins * 100.0) / totalMatchesPlayed : 0,
-            LossPercent = totalMatchesPlayed > 0 ? (totalLosses * 100.0) / totalMatchesPlayed : 0,
-            DrawPercent = totalMatchesPlayed > 0 ? (totalDraws * 100.0) / totalMatchesPlayed : 0,
-            CleanSheetsPercent = totalMatchesPlayed > 0 ? (totalCleanSheets * 100.0) / totalMatchesPlayed : 0,
-            MomPercent = totalMatchesPlayed > 0 ? (totalMom * 100.0) / totalMatchesPlayed : 0,
+            WinPercent = totalRows > 0 ? (totalWins * 100.0) / totalRows : 0,
+            LossPercent = totalRows > 0 ? (totalLosses * 100.0) / totalRows : 0,
+            DrawPercent = totalRows > 0 ? (totalDraws * 100.0) / totalRows : 0,
+            CleanSheetsPercent = totalRows > 0 ? (totalCleanSheets * 100.0) / totalRows : 0,
+            MomPercent = totalRows > 0 ? (totalMom * 100.0) / totalRows : 0,
             PassAccuracyPercent = totalPassAttempts > 0 ? (totalPassesMade * 100.0) / totalPassAttempts : 0,
             TackleSuccessPercent = totalTackleAttempts > 0 ? (totalTacklesMade * 100.0) / totalTackleAttempts : 0,
             GoalAccuracyPercent = totalShots > 0 ? (totalGoals * 100.0) / totalShots : 0
@@ -824,8 +806,7 @@ public class MatchesController : ControllerBase
             .Select(g =>
             {
                 var player = g.First().Player;
-                int matches = g.Count();
-
+                int matchesPlayed = g.Count();
                 int goals = g.Sum(p => p.Goals);
                 int shots = g.Sum(p => p.Shots);
                 int passesMade = g.Sum(p => p.Passesmade);
@@ -834,14 +815,14 @@ public class MatchesController : ControllerBase
                 int tackleAttempts = g.Sum(p => p.Tackleattempts);
                 int wins = g.Sum(p => p.Wins);
                 int losses = g.Sum(p => p.Losses);
-                int draws = matches - wins - losses;
+                int draws = matchesPlayed - wins - losses;
 
                 return new PlayerStatisticsDto
                 {
                     PlayerId = g.Key,
                     PlayerName = player?.Playername ?? "Unknown",
                     ClubId = player.ClubId,
-                    MatchesPlayed = matches,
+                    MatchesPlayed = matchesPlayed,
                     TotalGoals = goals,
                     TotalAssists = g.Sum(p => p.Assists),
                     TotalShots = shots,
@@ -860,7 +841,7 @@ public class MatchesController : ControllerBase
                     PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
                     TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
                     GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0,
-                    WinPercent = matches > 0 ? (wins * 100.0) / matches : 0
+                    WinPercent = matchesPlayed > 0 ? (wins * 100.0) / matchesPlayed : 0
                 };
             })
             .OrderByDescending(p => p.MatchesPlayed)
@@ -870,20 +851,25 @@ public class MatchesController : ControllerBase
             .GroupBy(p => p.ClubId)
             .Select(g =>
             {
-                int matches = g.Count();
+                int matchesPlayed = g.Count();
                 int goals = g.Sum(p => p.Goals);
                 int shots = g.Sum(p => p.Shots);
                 int passesMade = g.Sum(p => p.Passesmade);
                 int passAttempts = g.Sum(p => p.Passattempts);
                 int wins = g.Sum(p => p.Wins);
                 int losses = g.Sum(p => p.Losses);
-                int draws = matches - wins - losses;
+                int draws = matchesPlayed - wins - losses;
+
+                var clubRow = _dbContext.MatchClubs.FirstOrDefault(c => c.Details.ClubId == g.Key);
+                var clubName = clubRow?.Details?.Name ?? $"Clube {g.Key}";
+                var crestAssetId = clubRow?.Details?.CrestAssetId;
 
                 return new ClubStatisticsDto
                 {
                     ClubId = g.Key,
-                    ClubName = $"Clube {g.Key}",
-                    MatchesPlayed = matches,
+                    ClubName = clubName,
+                    ClubCrestAssetId = crestAssetId,
+                    MatchesPlayed = matchesPlayed,
                     TotalGoals = goals,
                     TotalAssists = g.Sum(p => p.Assists),
                     TotalShots = shots,
@@ -899,7 +885,7 @@ public class MatchesController : ControllerBase
                     TotalSaves = g.Sum(p => p.Saves),
                     TotalMom = g.Count(p => p.Mom),
                     AvgRating = g.Average(p => p.Rating),
-                    WinPercent = matches > 0 ? (wins * 100.0) / matches : 0,
+                    WinPercent = matchesPlayed > 0 ? (wins * 100.0) / matchesPlayed : 0,
                     PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
                     GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0
                 };
@@ -917,13 +903,15 @@ public class MatchesController : ControllerBase
 
 
     [HttpGet("matches/results")]
-    public async Task<IActionResult> GetMatchResults()
+    public async Task<IActionResult> GetMatchResults([FromQuery] long clubId)
     {
+        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+
         var matches = await _dbContext.Matches
-            .Where(m => m.Clubs.Any(c => c.ClubId == 3463149))  // Filtra partidas onde pelo menos um clube tem o ClubId 3463149
-            .Include(m => m.Clubs)  // Inclui ambos os clubes
-                .ThenInclude(c => c.Details)  // Inclui os detalhes dos clubes
-            .OrderByDescending(m => m.Timestamp)  // Ordena pelas partidas mais recentes
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
+            .Include(m => m.Clubs)
+                .ThenInclude(c => c.Details)
+            .OrderByDescending(m => m.Timestamp)
             .ToListAsync();
 
         var resultList = new List<MatchResultDto>();
@@ -931,11 +919,10 @@ public class MatchesController : ControllerBase
         foreach (var match in matches)
         {
             var clubs = match.Clubs
-                .OrderBy(c => c.Team) // Garantir uma ordem consistente
+                .OrderBy(c => c.Team) // garante ordem consistente
                 .ToList();
 
-            if (clubs.Count != 2)
-                continue; // Ignorar partidas incompletas
+            if (clubs.Count != 2) continue;
 
             var clubA = clubs[0];
             var clubB = clubs[1];
