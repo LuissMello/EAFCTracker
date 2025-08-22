@@ -279,13 +279,15 @@ public class MatchResultDto
 
     public string ClubAName { get; set; }
     public short ClubAGoals { get; set; }
-    public ClubDetailsDto ClubADetails { get; set; }  // Detalhes do Clube A
+    public short ClubARedCards { get; set; }   
+    public ClubDetailsDto ClubADetails { get; set; }
 
     public string ClubBName { get; set; }
     public short ClubBGoals { get; set; }
-    public ClubDetailsDto ClubBDetails { get; set; }  // Detalhes do Clube B
+    public short ClubBRedCards { get; set; }  
+    public ClubDetailsDto ClubBDetails { get; set; }
 
-    public string ResultText { get; set; } // Ex: "Team A 2 x 1 Team B"
+    public string ResultText { get; set; }
 }
 
 public class CalendarDaySummaryDto

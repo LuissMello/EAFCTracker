@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+Ôªøusing Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 [ApiController]
@@ -163,7 +163,7 @@ public class MatchesController : ControllerBase
         {
             MatchId = match.MatchId,
             Timestamp = match.Timestamp,
-            MatchType = match.MatchType,  // IncluÌdo MatchType
+            MatchType = match.MatchType,  // Inclu√≠do MatchType
             Clubs = match.Clubs.Select(c => new MatchClubDto
             {
                 ClubId = c.ClubId,
@@ -290,7 +290,7 @@ public class MatchesController : ControllerBase
             .FirstOrDefaultAsync(m => m.MatchId == matchId);
 
         if (match == null)
-            return NotFound("Partida n„o encontrada.");
+            return NotFound("Partida n√£o encontrada.");
 
         var players = match.MatchPlayers;
 
@@ -416,7 +416,7 @@ public class MatchesController : ControllerBase
                 int losses = g.Sum(p => p.Losses);
                 int draws = matches - wins - losses;
 
-                // ObtÈm o clube do jogador e suas informaÁıes
+                // Obt√©m o clube do jogador e suas informa√ß√µes
                 var club = _dbContext.MatchClubs.FirstOrDefault(c => c.Details.ClubId == g.Key);
                 var clubName = club.Details.Name ?? $"Clube {g.Key}";
                 var crestAssetId = club.Details.CrestAssetId;
@@ -547,8 +547,8 @@ public class MatchesController : ControllerBase
     [HttpGet("statistics/limited")]
     public async Task<IActionResult> GetMatchStatisticsLimited([FromQuery] long clubId, [FromQuery] int count = 10)
     {
-        if (clubId <= 0) return BadRequest("Informe um clubId v·lido.");
-        if (count <= 0) return BadRequest("O n˙mero de partidas deve ser maior que zero.");
+        if (clubId <= 0) return BadRequest("Informe um clubId v√°lido.");
+        if (count <= 0) return BadRequest("O n√∫mero de partidas deve ser maior que zero.");
 
         // Partidas onde o clube informado participou
         var matches = await _dbContext.Matches
@@ -639,7 +639,7 @@ public class MatchesController : ControllerBase
             .ToList();
 
         // ==== CLUBE (UMA LINHA) ====
-        // SomatÛrios de aÁıes seguem vindo dos jogadores; W/D/L e MatchesPlayed vÍm de clubSides
+        // Somat√≥rios de a√ß√µes seguem vindo dos jogadores; W/D/L e MatchesPlayed v√™m de clubSides
         int totalShots = allPlayers.Sum(p => p.Shots);
         int totalPassesMade = allPlayers.Sum(p => p.Passesmade);
         int totalPassAttempts = allPlayers.Sum(p => p.Passattempts);
@@ -700,7 +700,7 @@ public class MatchesController : ControllerBase
             TotalLosses = lossesCount,
             TotalDraws = drawsCount,
 
-            // Cartıes/saves/mom: somatÛrio raw
+            // Cart√µes/saves/mom: somat√≥rio raw
             TotalCleanSheets = cleanSheetsMatches, // por partida
             TotalRedCards = playersStats.Sum(p => p.TotalRedCards),
             TotalSaves = playersStats.Sum(p => p.TotalSaves),
@@ -731,7 +731,7 @@ public class MatchesController : ControllerBase
     [HttpGet("statistics")]
     public async Task<IActionResult> GetMatchStatistics([FromQuery] long clubId)
     {
-        if (clubId <= 0) return BadRequest("Informe um clubId v·lido.");
+        if (clubId <= 0) return BadRequest("Informe um clubId v√°lido.");
 
         var matches = await _dbContext.Matches
             .Include(m => m.Clubs.Where(c => c.ClubId == clubId))
@@ -914,10 +914,10 @@ public class MatchesController : ControllerBase
     [HttpGet("matches/results")]
     public async Task<IActionResult> GetMatchResults(
         [FromQuery] long clubId,
-        [FromQuery] MatchType matchType = MatchType.All 
+        [FromQuery] MatchType matchType = MatchType.All
     )
     {
-        if (clubId <= 0) return BadRequest("Informe um clubId v·lido.");
+        if (clubId <= 0) return BadRequest("Informe um clubId v√°lido.");
 
         var query = _dbContext.Matches
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
@@ -934,6 +934,7 @@ public class MatchesController : ControllerBase
         var matches = await query
             .Include(m => m.Clubs)
                 .ThenInclude(c => c.Details)
+            .Include(m => m.MatchPlayers)  
             .OrderByDescending(m => m.Timestamp)
             .ToListAsync();
 
@@ -942,7 +943,7 @@ public class MatchesController : ControllerBase
         foreach (var match in matches)
         {
             var clubs = match.Clubs
-                .OrderBy(c => c.Team) // garante ordem consistente
+                .OrderBy(c => c.Team)
                 .ToList();
 
             if (clubs.Count != 2) continue;
@@ -950,15 +951,28 @@ public class MatchesController : ControllerBase
             var clubA = clubs[0];
             var clubB = clubs[1];
 
+            // soma de cart√µes vermelhos por clube no match
+            short SumRedCards(long cid) =>
+                (short)((match.MatchPlayers?
+                    .Where(p => p.ClubId == cid)
+                    .Sum(p => (int?)p.Redcards) ?? 0));
+
+            var redA = SumRedCards(clubA.ClubId);
+            var redB = SumRedCards(clubB.ClubId);
+
             var dto = new MatchResultDto
             {
                 MatchId = match.MatchId,
                 Timestamp = match.Timestamp,
+
                 ClubAName = clubA.Details?.Name ?? $"Clube {clubA.ClubId}",
                 ClubAGoals = clubA.Goals,
+                ClubARedCards = redA, // ‚¨Ö mapeado
+
                 ClubADetails = clubA.Details == null ? null : new ClubDetailsDto
                 {
                     Name = clubA.Details.Name,
+                    ClubId = clubA.ClubId,
                     RegionId = clubA.Details.RegionId,
                     TeamId = clubA.Details.TeamId,
                     StadName = clubA.Details.StadName,
@@ -983,11 +997,15 @@ public class MatchesController : ControllerBase
                     CrestColor = clubA.Details.CrestColor,
                     CrestAssetId = clubA.Details.CrestAssetId
                 },
+
                 ClubBName = clubB.Details?.Name ?? $"Clube {clubB.ClubId}",
                 ClubBGoals = clubB.Goals,
+                ClubBRedCards = redB, // ‚¨Ö mapeado
+
                 ClubBDetails = clubB.Details == null ? null : new ClubDetailsDto
                 {
                     Name = clubB.Details.Name,
+                    ClubId = clubB.ClubId,
                     RegionId = clubB.Details.RegionId,
                     TeamId = clubB.Details.TeamId,
                     StadName = clubB.Details.StadName,
@@ -1012,6 +1030,7 @@ public class MatchesController : ControllerBase
                     CrestColor = clubB.Details.CrestColor,
                     CrestAssetId = clubB.Details.CrestAssetId
                 },
+
                 ResultText = $"{clubA.Details?.Name ?? "Clube A"} {clubA.Goals} x {clubB.Goals} {clubB.Details?.Name ?? "Clube B"}"
             };
 
@@ -1043,7 +1062,7 @@ public async Task<IActionResult> DeleteMatch(long matchId)
 
     if (match == null)
     {
-        return NotFound(new { message = "Partida n„o encontrada" });
+        return NotFound(new { message = "Partida n√£o encontrada" });
     }
 
     var matchPlayers = await _dbContext.MatchPlayers
