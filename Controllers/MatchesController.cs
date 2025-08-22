@@ -912,12 +912,26 @@ public class MatchesController : ControllerBase
 
 
     [HttpGet("matches/results")]
-    public async Task<IActionResult> GetMatchResults([FromQuery] long clubId)
+    public async Task<IActionResult> GetMatchResults(
+        [FromQuery] long clubId,
+        [FromQuery] MatchType matchType = MatchType.All 
+    )
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-        var matches = await _dbContext.Matches
-            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
+        var query = _dbContext.Matches
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
+
+        if (matchType == MatchType.League)
+        {
+            query = query.Where(m => m.MatchType == MatchType.League);
+        }
+        else if (matchType == MatchType.Playoff)
+        {
+            query = query.Where(m => m.MatchType == MatchType.Playoff);
+        }
+
+        var matches = await query
             .Include(m => m.Clubs)
                 .ThenInclude(c => c.Details)
             .OrderByDescending(m => m.Timestamp)
@@ -1006,6 +1020,7 @@ public class MatchesController : ControllerBase
 
         return Ok(resultList);
     }
+
 
     [HttpGet("{playerId:long}")]
     public async Task<IActionResult> GetPlayerById(long playerId)
