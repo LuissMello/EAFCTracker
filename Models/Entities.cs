@@ -76,6 +76,7 @@ public class ClubDetailsEntity
     public string? DCustomKit { get; set; }
     public string? CrestColor { get; set; }
     public string? CrestAssetId { get; set; }
+    public string? SelectedKitType { get; set; }
 }
 
 public class MatchPlayerEntity

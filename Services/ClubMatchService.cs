@@ -111,7 +111,9 @@ public class ClubMatchService
                 KitThrdColor4 = club.Details?.CustomKit?.KitThrdColor4,
                 DCustomKit = club.Details?.CustomKit?.DCustomKit,
                 CrestColor = club.Details?.CustomKit?.CrestColor,
-                CrestAssetId = club.Details?.CustomKit?.CrestAssetId
+                CrestAssetId = club.Details?.CustomKit?.CrestAssetId,
+                SelectedKitType = club.Details?.CustomKit?.SelectedKitType
+
             };
 
             var matchClub = new MatchClubEntity
