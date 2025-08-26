@@ -545,18 +545,42 @@ public class MatchesController : ControllerBase
     }
 
     [HttpGet("statistics/limited")]
-    public async Task<IActionResult> GetMatchStatisticsLimited([FromQuery] long clubId, [FromQuery] int count = 10)
+    public async Task<IActionResult> GetMatchStatisticsLimited(
+    [FromQuery] long clubId,
+    [FromQuery] int? opponentCount,
+    [FromQuery] int count = 10)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
         if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
 
-        // Partidas onde o clube informado participou
-        var matches = await _dbContext.Matches
+        if (opponentCount.HasValue && (opponentCount < 2 || opponentCount > 11))
+            return BadRequest("opponentCount deve estar entre 2 e 11.");
+
+        // Query base: partidas em que o clube participou
+        IQueryable<MatchEntity> query = _dbContext.Matches
             .Include(m => m.Clubs.Where(c => c.ClubId == clubId))
                 .ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers)
                 .ThenInclude(mp => mp.Player)
-            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
+
+        if (opponentCount.HasValue)
+        {
+            int oc = opponentCount.Value;
+
+            // Conta jogadores distintos do lado adversário nessa partida
+            // (usa PlayerEntityId para evitar duplicidade)
+            query = query.Where(m =>
+                m.MatchPlayers
+                 .Where(mp => mp.Player.ClubId != clubId)
+                 .Select(mp => mp.PlayerEntityId)
+                 .Distinct()
+                 .Count() == oc
+            );
+        }
+
+        // Ordena por mais recente e limita pela quantidade solicitada
+        var matches = await query
             .OrderByDescending(m => m.Timestamp)
             .Take(count)
             .ToListAsync();
@@ -639,7 +663,6 @@ public class MatchesController : ControllerBase
             .ToList();
 
         // ==== CLUBE (UMA LINHA) ====
-        // Somatórios de ações seguem vindo dos jogadores; W/D/L e MatchesPlayed vêm de clubSides
         int totalShots = allPlayers.Sum(p => p.Shots);
         int totalPassesMade = allPlayers.Sum(p => p.Passesmade);
         int totalPassAttempts = allPlayers.Sum(p => p.Passattempts);
@@ -669,10 +692,10 @@ public class MatchesController : ControllerBase
             TotalWins = winsCount,
             TotalLosses = lossesCount,
             TotalDraws = drawsCount,
-            TotalCleanSheets = cleanSheetsMatches, // por partida
+            TotalCleanSheets = cleanSheetsMatches,
             TotalRedCards = allPlayers.Sum(p => p.Redcards),
             TotalSaves = allPlayers.Sum(p => p.Saves),
-            TotalMom = momMatches, // por partida
+            TotalMom = momMatches,
             AvgRating = allPlayers.Any() ? allPlayers.Average(p => p.Rating) : 0,
             WinPercent = matchesPlayedByClub > 0 ? (winsCount * 100.0) / matchesPlayedByClub : 0,
             PassAccuracyPercent = totalPassAttempts > 0 ? (totalPassesMade * 100.0) / totalPassAttempts : 0,
@@ -695,18 +718,15 @@ public class MatchesController : ControllerBase
             TotalTackleAttempts = totalTackleAttempts,
             TotalRating = playersStats.Sum(p => p.AvgRating),
 
-            // W/D/L corretos por partida
             TotalWins = winsCount,
             TotalLosses = lossesCount,
             TotalDraws = drawsCount,
 
-            // Cartões/saves/mom: somatório raw
-            TotalCleanSheets = cleanSheetsMatches, // por partida
+            TotalCleanSheets = cleanSheetsMatches,
             TotalRedCards = playersStats.Sum(p => p.TotalRedCards),
             TotalSaves = playersStats.Sum(p => p.TotalSaves),
-            TotalMom = momMatches, // por partida
+            TotalMom = momMatches,
 
-            // Percentuais corretos por partida do clube
             WinPercent = matchesPlayedByClub > 0 ? (winsCount * 100.0) / matchesPlayedByClub : 0,
             LossPercent = matchesPlayedByClub > 0 ? (lossesCount * 100.0) / matchesPlayedByClub : 0,
             DrawPercent = matchesPlayedByClub > 0 ? (drawsCount * 100.0) / matchesPlayedByClub : 0,
@@ -725,7 +745,6 @@ public class MatchesController : ControllerBase
             Clubs = clubsStats
         });
     }
-
 
 
     [HttpGet("statistics")]
@@ -960,6 +979,9 @@ public class MatchesController : ControllerBase
             var redA = SumRedCards(clubA.ClubId);
             var redB = SumRedCards(clubB.ClubId);
 
+            var clubAPlayerCount = match.MatchPlayers.Count(mp => mp.ClubId == clubA.ClubId);
+            var clubBPlayerCount = match.MatchPlayers.Count(mp => mp.ClubId == clubB.ClubId);
+
             var dto = new MatchResultDto
             {
                 MatchId = match.MatchId,
@@ -967,7 +989,8 @@ public class MatchesController : ControllerBase
 
                 ClubAName = clubA.Details?.Name ?? $"Clube {clubA.ClubId}",
                 ClubAGoals = clubA.Goals,
-                ClubARedCards = redA, // ⬅ mapeado
+                ClubARedCards = redA, 
+                ClubAPlayerCount = clubAPlayerCount,
 
                 ClubADetails = clubA.Details == null ? null : new ClubDetailsDto
                 {
@@ -995,12 +1018,14 @@ public class MatchesController : ControllerBase
                     KitThrdColor4 = clubA.Details.KitThrdColor4,
                     DCustomKit = clubA.Details.DCustomKit,
                     CrestColor = clubA.Details.CrestColor,
-                    CrestAssetId = clubA.Details.CrestAssetId
+                    CrestAssetId = clubA.Details.CrestAssetId,
+                    SelectedKitType = clubA.Details.SelectedKitType
                 },
 
                 ClubBName = clubB.Details?.Name ?? $"Clube {clubB.ClubId}",
                 ClubBGoals = clubB.Goals,
-                ClubBRedCards = redB, // ⬅ mapeado
+                ClubBRedCards = redB, 
+                ClubBPlayerCount = clubBPlayerCount,
 
                 ClubBDetails = clubB.Details == null ? null : new ClubDetailsDto
                 {
@@ -1028,7 +1053,8 @@ public class MatchesController : ControllerBase
                     KitThrdColor4 = clubB.Details.KitThrdColor4,
                     DCustomKit = clubB.Details.DCustomKit,
                     CrestColor = clubB.Details.CrestColor,
-                    CrestAssetId = clubB.Details.CrestAssetId
+                    CrestAssetId = clubB.Details.CrestAssetId,
+                    SelectedKitType = clubB.Details.SelectedKitType
                 },
 
                 ResultText = $"{clubA.Details?.Name ?? "Clube A"} {clubA.Goals} x {clubB.Goals} {clubB.Details?.Name ?? "Clube B"}"

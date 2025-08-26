@@ -56,6 +56,7 @@ public class ClubDetailsDto
     public string DCustomKit { get; set; }
     public string CrestColor { get; set; }
     public string CrestAssetId { get; set; }
+    public string SelectedKitType { get; set; }
 }
 
 public class MatchPlayerDto
@@ -280,11 +281,13 @@ public class MatchResultDto
     public string ClubAName { get; set; }
     public short ClubAGoals { get; set; }
     public short ClubARedCards { get; set; }   
+    public int ClubAPlayerCount { get; set; }
     public ClubDetailsDto ClubADetails { get; set; }
 
     public string ClubBName { get; set; }
     public short ClubBGoals { get; set; }
     public short ClubBRedCards { get; set; }  
+    public int ClubBPlayerCount { get; set; }
     public ClubDetailsDto ClubBDetails { get; set; }
 
     public string ResultText { get; set; }
