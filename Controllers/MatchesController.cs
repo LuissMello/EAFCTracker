@@ -1,80 +1,170 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Linq.Expressions;
 
 [ApiController]
 [Route("api/[controller]")]
 public class MatchesController : ControllerBase
 {
-    private readonly EAFCContext _dbContext;
+    private const int MinOpponentPlayers = 2;
+    private const int MaxOpponentPlayers = 11;
 
-    public MatchesController(EAFCContext dbContext)
+    private readonly EAFCContext _db;
+
+    public MatchesController(EAFCContext dbContext) => _db = dbContext;
+
+    // ==============================
+    // Projeções / Mapeadores (SRP)
+    // ==============================
+    private static class Proj
     {
-        _dbContext = dbContext;
-    }
-
-    [HttpGet]
-    public async Task<IActionResult> GetAllMatches()
-    {
-        var matches = await _dbContext.Matches
-            .Include(m => m.Clubs)
-                .ThenInclude(c => c.Details)
-            .Include(m => m.MatchPlayers)
-                .ThenInclude(mp => mp.Player)
-                    .ThenInclude(p => p.PlayerMatchStats)
-            .OrderByDescending(m => m.Timestamp)
-            .ToListAsync();
-
-        var matchDtos = matches.Select(m => new MatchDto
+        public static readonly Expression<Func<MatchPlayerEntity, MatchPlayerStatsDto>> MatchPlayerStatsRow =
+        mp => new MatchPlayerStatsDto
         {
-            MatchId = m.MatchId,
-            Timestamp = m.Timestamp,
-            MatchType = m.MatchType,
-            Clubs = m.Clubs.Select(c => new MatchClubDto
-            {
-                ClubId = c.ClubId,
-                Date = c.Date,
-                GameNumber = c.GameNumber,
-                Goals = c.Goals,
-                GoalsAgainst = c.GoalsAgainst,
-                Losses = c.Losses,
-                MatchType = c.MatchType,
-                Result = c.Result,
-                Score = c.Score,
-                SeasonId = c.SeasonId,
-                Team = c.Team,
-                Ties = c.Ties,
-                Wins = c.Wins,
-                WinnerByDnf = c.WinnerByDnf,
-                Details = c.Details == null ? null : new ClubDetailsDto
+            PlayerId = mp.PlayerEntityId,
+            PlayerName = mp.Player != null ? mp.Player.Playername : "Desconhecido",
+            // campos diretos do MatchPlayer
+            Assists = mp.Assists,
+            CleansheetsAny = mp.Cleansheetsany,
+            CleansheetsDef = mp.Cleansheetsdef,
+            CleansheetsGk = mp.Cleansheetsgk,
+            Goals = mp.Goals,
+            GoalsConceded = mp.Goalsconceded,
+            Losses = mp.Losses,
+            Mom = mp.Mom,
+            Namespace = mp.Namespace,
+            PassAttempts = mp.Passattempts,
+            PassesMade = mp.Passesmade,
+            // calcula % no servidor
+            PassAccuracy = mp.Passattempts > 0 ? (double)mp.Passesmade / mp.Passattempts * 100.0 : 0.0,
+            Position = mp.Pos,
+            Rating = mp.Rating,
+            RealtimeGame = mp.Realtimegame,
+            RealtimeIdle = mp.Realtimeidle,
+            RedCards = mp.Redcards,
+            Saves = mp.Saves,
+            Score = mp.Score,
+            Shots = mp.Shots,
+            TackleAttempts = mp.Tackleattempts,
+            TacklesMade = mp.Tacklesmade,
+            VproAttr = mp.Vproattr,
+            VproHackReason = mp.Vprohackreason,
+            Wins = mp.Wins,
+            // stats agregadas do jogador (se existirem)
+            Statistics = mp.Player != null && mp.Player.PlayerMatchStats != null
+                ? new PlayerMatchStatsDto
                 {
-                    Name = c.Details.Name,
-                    RegionId = c.Details.RegionId,
-                    TeamId = c.Details.TeamId,
-                    StadName = c.Details.StadName,
-                    KitId = c.Details.KitId,
-                    CustomKitId = c.Details.CustomKitId,
-                    CustomAwayKitId = c.Details.CustomAwayKitId,
-                    CustomThirdKitId = c.Details.CustomThirdKitId,
-                    CustomKeeperKitId = c.Details.CustomKeeperKitId,
-                    KitColor1 = c.Details.KitColor1,
-                    KitColor2 = c.Details.KitColor2,
-                    KitColor3 = c.Details.KitColor3,
-                    KitColor4 = c.Details.KitColor4,
-                    KitAColor1 = c.Details.KitAColor1,
-                    KitAColor2 = c.Details.KitAColor2,
-                    KitAColor3 = c.Details.KitAColor3,
-                    KitAColor4 = c.Details.KitAColor4,
-                    KitThrdColor1 = c.Details.KitThrdColor1,
-                    KitThrdColor2 = c.Details.KitThrdColor2,
-                    KitThrdColor3 = c.Details.KitThrdColor3,
-                    KitThrdColor4 = c.Details.KitThrdColor4,
-                    DCustomKit = c.Details.DCustomKit,
-                    CrestColor = c.Details.CrestColor,
-                    CrestAssetId = c.Details.CrestAssetId
+                    Aceleracao = mp.Player.PlayerMatchStats.Aceleracao,
+                    Pique = mp.Player.PlayerMatchStats.Pique,
+                    Finalizacao = mp.Player.PlayerMatchStats.Finalizacao,
+                    Falta = mp.Player.PlayerMatchStats.Falta,
+                    Cabeceio = mp.Player.PlayerMatchStats.Cabeceio,
+                    ForcaDoChute = mp.Player.PlayerMatchStats.ForcaDoChute,
+                    ChuteLonge = mp.Player.PlayerMatchStats.ChuteLonge,
+                    Voleio = mp.Player.PlayerMatchStats.Voleio,
+                    Penalti = mp.Player.PlayerMatchStats.Penalti,
+                    Visao = mp.Player.PlayerMatchStats.Visao,
+                    Cruzamento = mp.Player.PlayerMatchStats.Cruzamento,
+                    Lancamento = mp.Player.PlayerMatchStats.Lancamento,
+                    PasseCurto = mp.Player.PlayerMatchStats.PasseCurto,
+                    Curva = mp.Player.PlayerMatchStats.Curva,
+                    Agilidade = mp.Player.PlayerMatchStats.Agilidade,
+                    Equilibrio = mp.Player.PlayerMatchStats.Equilibrio,
+                    PosAtaqueInutil = mp.Player.PlayerMatchStats.PosAtaqueInutil,
+                    ControleBola = mp.Player.PlayerMatchStats.ControleBola,
+                    Conducao = mp.Player.PlayerMatchStats.Conducao,
+                    Interceptacaos = mp.Player.PlayerMatchStats.Interceptacaos,
+                    NocaoDefensiva = mp.Player.PlayerMatchStats.NocaoDefensiva,
+                    DivididaEmPe = mp.Player.PlayerMatchStats.DivididaEmPe,
+                    Carrinho = mp.Player.PlayerMatchStats.Carrinho,
+                    Impulsao = mp.Player.PlayerMatchStats.Impulsao,
+                    Folego = mp.Player.PlayerMatchStats.Folego,
+                    Forca = mp.Player.PlayerMatchStats.Forca,
+                    Reacao = mp.Player.PlayerMatchStats.Reacao,
+                    Combatividade = mp.Player.PlayerMatchStats.Combatividade,
+                    Frieza = mp.Player.PlayerMatchStats.Frieza,
+                    ElasticidadeGL = mp.Player.PlayerMatchStats.ElasticidadeGL,
+                    ManejoGL = mp.Player.PlayerMatchStats.ManejoGL,
+                    ChuteGL = mp.Player.PlayerMatchStats.ChuteGL,
+                    ReflexosGL = mp.Player.PlayerMatchStats.ReflexosGL,
+                    PosGL = mp.Player.PlayerMatchStats.PosGL
                 }
-            }).ToList(),
+                : null
+        };
 
-            Players = m.MatchPlayers.Select(p => new MatchPlayerDto
+
+        public static readonly Expression<Func<PlayerMatchStatsEntity, PlayerMatchStatsDto>> PlayerMatchStats =
+            s => new PlayerMatchStatsDto
+            {
+                Aceleracao = s.Aceleracao,
+                Pique = s.Pique,
+                Finalizacao = s.Finalizacao,
+                Falta = s.Falta,
+                Cabeceio = s.Cabeceio,
+                ForcaDoChute = s.ForcaDoChute,
+                ChuteLonge = s.ChuteLonge,
+                Voleio = s.Voleio,
+                Penalti = s.Penalti,
+                Visao = s.Visao,
+                Cruzamento = s.Cruzamento,
+                Lancamento = s.Lancamento,
+                PasseCurto = s.PasseCurto,
+                Curva = s.Curva,
+                Agilidade = s.Agilidade,
+                Equilibrio = s.Equilibrio,
+                PosAtaqueInutil = s.PosAtaqueInutil,
+                ControleBola = s.ControleBola,
+                Conducao = s.Conducao,
+                Interceptacaos = s.Interceptacaos,
+                NocaoDefensiva = s.NocaoDefensiva,
+                DivididaEmPe = s.DivididaEmPe,
+                Carrinho = s.Carrinho,
+                Impulsao = s.Impulsao,
+                Folego = s.Folego,
+                Forca = s.Forca,
+                Reacao = s.Reacao,
+                Combatividade = s.Combatividade,
+                Frieza = s.Frieza, // ajuste se o nome for Frieza
+                ElasticidadeGL = s.ElasticidadeGL,
+                ManejoGL = s.ManejoGL,
+                ChuteGL = s.ChuteGL,
+                ReflexosGL = s.ReflexosGL,
+                PosGL = s.PosGL
+            };
+
+        public static readonly Expression<Func<ClubDetailsEntity, ClubDetailsDto>> ClubDetails =
+            d => new ClubDetailsDto
+            {
+                Name = d.Name,
+                RegionId = d.RegionId,
+                TeamId = d.TeamId,
+                StadName = d.StadName,
+                KitId = d.KitId,
+                CustomKitId = d.CustomKitId,
+                CustomAwayKitId = d.CustomAwayKitId,
+                CustomThirdKitId = d.CustomThirdKitId,
+                CustomKeeperKitId = d.CustomKeeperKitId,
+                KitColor1 = d.KitColor1,
+                KitColor2 = d.KitColor2,
+                KitColor3 = d.KitColor3,
+                KitColor4 = d.KitColor4,
+                KitAColor1 = d.KitAColor1,
+                KitAColor2 = d.KitAColor2,
+                KitAColor3 = d.KitAColor3,
+                KitAColor4 = d.KitAColor4,
+                KitThrdColor1 = d.KitThrdColor1,
+                KitThrdColor2 = d.KitThrdColor2,
+                KitThrdColor3 = d.KitThrdColor3,
+                KitThrdColor4 = d.KitThrdColor4,
+                DCustomKit = d.DCustomKit,
+                CrestColor = d.CrestColor,
+                CrestAssetId = d.CrestAssetId,
+                SelectedKitType = d.SelectedKitType,
+                ClubId = d.ClubId // se existir no DTO
+            };
+
+        public static readonly Expression<Func<MatchPlayerEntity, MatchPlayerDto>> MatchPlayer =
+            p => new MatchPlayerDto
             {
                 PlayerId = p.Player.PlayerId,
                 ClubId = p.ClubId,
@@ -139,32 +229,10 @@ public class MatchesController : ControllerBase
                     ReflexosGL = p.Player.PlayerMatchStats.ReflexosGL,
                     PosGL = p.Player.PlayerMatchStats.PosGL
                 }
-            }).ToList()
-        }).ToList();
+            };
 
-        return Ok(matchDtos);
-    }
-
-
-    [HttpGet("{matchId:long}")]
-    public async Task<IActionResult> GetMatchById(long matchId)
-    {
-        var match = await _dbContext.Matches
-            .Include(m => m.Clubs)
-                .ThenInclude(c => c.Details)
-            .Include(m => m.MatchPlayers)
-                .ThenInclude(mp => mp.Player)
-            .FirstOrDefaultAsync(m => m.MatchId == matchId);
-
-        if (match == null)
-            return NotFound();
-
-        var matchDtos = new MatchDto
-        {
-            MatchId = match.MatchId,
-            Timestamp = match.Timestamp,
-            MatchType = match.MatchType,  // Incluído MatchType
-            Clubs = match.Clubs.Select(c => new MatchClubDto
+        public static readonly Expression<Func<MatchClubEntity, MatchClubDto>> MatchClub =
+            c => new MatchClubDto
             {
                 ClubId = c.ClubId,
                 Date = c.Date,
@@ -205,100 +273,197 @@ public class MatchesController : ControllerBase
                     KitThrdColor4 = c.Details.KitThrdColor4,
                     DCustomKit = c.Details.DCustomKit,
                     CrestColor = c.Details.CrestColor,
-                    CrestAssetId = c.Details.CrestAssetId
+                    CrestAssetId = c.Details.CrestAssetId,
+                    SelectedKitType = c.Details.SelectedKitType,
+                    ClubId = c.Details.ClubId
                 }
-            }).ToList(),
-            Players = match.MatchPlayers.Select(p => new MatchPlayerDto
-            {
-                PlayerId = p.Player.PlayerId,
-                ClubId = p.ClubId,
-                Playername = p.Player.Playername,
-                Goals = p.Goals,
-                Assists = p.Assists,
-                Rating = p.Rating,
-                Cleansheetsany = p.Cleansheetsany,
-                Cleansheetsdef = p.Cleansheetsdef,
-                Cleansheetsgk = p.Cleansheetsgk,
-                Losses = p.Losses,
-                Mom = p.Mom,
-                Passattempts = p.Passattempts,
-                Passesmade = p.Passesmade,
-                Realtimegame = p.Realtimegame,
-                Realtimeidle = p.Realtimeidle,
-                Redcards = p.Redcards,
-                Saves = p.Saves,
-                Score = p.Score,
-                Shots = p.Shots,
-                Tackleattempts = p.Tackleattempts,
-                Tacklesmade = p.Tacklesmade,
-                Vproattr = p.Vproattr,
-                Vprohackreason = p.Vprohackreason,
-                Wins = p.Wins,
-                Pos = p.Pos,
-                Namespace = p.Namespace,
-                Stats = new PlayerMatchStatsDto
-                {
-                    Aceleracao = p.Player.PlayerMatchStats.Aceleracao,
-                    Pique = p.Player.PlayerMatchStats.Pique,
-                    Finalizacao = p.Player.PlayerMatchStats.Finalizacao,
-                    Falta = p.Player.PlayerMatchStats.Falta,
-                    Cabeceio = p.Player.PlayerMatchStats.Cabeceio,
-                    ForcaDoChute = p.Player.PlayerMatchStats.ForcaDoChute,
-                    ChuteLonge = p.Player.PlayerMatchStats.ChuteLonge,
-                    Voleio = p.Player.PlayerMatchStats.Voleio,
-                    Penalti = p.Player.PlayerMatchStats.Penalti,
-                    Visao = p.Player.PlayerMatchStats.Visao,
-                    Cruzamento = p.Player.PlayerMatchStats.Cruzamento,
-                    Lancamento = p.Player.PlayerMatchStats.Lancamento,
-                    PasseCurto = p.Player.PlayerMatchStats.PasseCurto,
-                    Curva = p.Player.PlayerMatchStats.Curva,
-                    Agilidade = p.Player.PlayerMatchStats.Agilidade,
-                    Equilibrio = p.Player.PlayerMatchStats.Equilibrio,
-                    PosAtaqueInutil = p.Player.PlayerMatchStats.PosAtaqueInutil,
-                    ControleBola = p.Player.PlayerMatchStats.ControleBola,
-                    Conducao = p.Player.PlayerMatchStats.Conducao,
-                    Interceptacaos = p.Player.PlayerMatchStats.Interceptacaos,
-                    NocaoDefensiva = p.Player.PlayerMatchStats.NocaoDefensiva,
-                    DivididaEmPe = p.Player.PlayerMatchStats.DivididaEmPe,
-                    Carrinho = p.Player.PlayerMatchStats.Carrinho,
-                    Impulsao = p.Player.PlayerMatchStats.Impulsao,
-                    Folego = p.Player.PlayerMatchStats.Folego,
-                    Forca = p.Player.PlayerMatchStats.Forca,
-                    Reacao = p.Player.PlayerMatchStats.Reacao,
-                    Combatividade = p.Player.PlayerMatchStats.Combatividade,
-                    Frieza = p.Player.PlayerMatchStats.Frieza,
-                    ElasticidadeGL = p.Player.PlayerMatchStats.ElasticidadeGL,
-                    ManejoGL = p.Player.PlayerMatchStats.ManejoGL,
-                    ChuteGL = p.Player.PlayerMatchStats.ChuteGL,
-                    ReflexosGL = p.Player.PlayerMatchStats.ReflexosGL,
-                    PosGL = p.Player.PlayerMatchStats.PosGL
-                }
-            }).ToList()
-        };
+            };
 
-        return Ok(matchDtos);
+        public static readonly Expression<Func<MatchEntity, MatchDto>> Match =
+            m => new MatchDto
+            {
+                MatchId = m.MatchId,
+                Timestamp = m.Timestamp,
+                MatchType = m.MatchType,
+                Clubs = m.Clubs.Select(c => new MatchClubDto
+                {
+                    ClubId = c.ClubId,
+                    Date = c.Date,
+                    GameNumber = c.GameNumber,
+                    Goals = c.Goals,
+                    GoalsAgainst = c.GoalsAgainst,
+                    Losses = c.Losses,
+                    MatchType = c.MatchType,
+                    Result = c.Result,
+                    Score = c.Score,
+                    SeasonId = c.SeasonId,
+                    Team = c.Team,
+                    Ties = c.Ties,
+                    Wins = c.Wins,
+                    WinnerByDnf = c.WinnerByDnf,
+                    Details = c.Details == null ? null : new ClubDetailsDto
+                    {
+                        Name = c.Details.Name,
+                        RegionId = c.Details.RegionId,
+                        TeamId = c.Details.TeamId,
+                        StadName = c.Details.StadName,
+                        KitId = c.Details.KitId,
+                        CustomKitId = c.Details.CustomKitId,
+                        CustomAwayKitId = c.Details.CustomAwayKitId,
+                        CustomThirdKitId = c.Details.CustomThirdKitId,
+                        CustomKeeperKitId = c.Details.CustomKeeperKitId,
+                        KitColor1 = c.Details.KitColor1,
+                        KitColor2 = c.Details.KitColor2,
+                        KitColor3 = c.Details.KitColor3,
+                        KitColor4 = c.Details.KitColor4,
+                        KitAColor1 = c.Details.KitAColor1,
+                        KitAColor2 = c.Details.KitAColor2,
+                        KitAColor3 = c.Details.KitAColor3,
+                        KitAColor4 = c.Details.KitAColor4,
+                        KitThrdColor1 = c.Details.KitThrdColor1,
+                        KitThrdColor2 = c.Details.KitThrdColor2,
+                        KitThrdColor3 = c.Details.KitThrdColor3,
+                        KitThrdColor4 = c.Details.KitThrdColor4,
+                        DCustomKit = c.Details.DCustomKit,
+                        CrestColor = c.Details.CrestColor,
+                        CrestAssetId = c.Details.CrestAssetId,
+                        SelectedKitType = c.Details.SelectedKitType,
+                        ClubId = c.Details.ClubId
+                    }
+                }).ToList(),
+                Players = m.MatchPlayers.Select(p => new MatchPlayerDto
+                {
+                    PlayerId = p.Player.PlayerId,
+                    ClubId = p.ClubId,
+                    Playername = p.Player.Playername,
+                    Goals = p.Goals,
+                    Assists = p.Assists,
+                    Rating = p.Rating,
+                    Cleansheetsany = p.Cleansheetsany,
+                    Cleansheetsdef = p.Cleansheetsdef,
+                    Cleansheetsgk = p.Cleansheetsgk,
+                    Losses = p.Losses,
+                    Mom = p.Mom,
+                    Passattempts = p.Passattempts,
+                    Passesmade = p.Passesmade,
+                    Realtimegame = p.Realtimegame,
+                    Realtimeidle = p.Realtimeidle,
+                    Redcards = p.Redcards,
+                    Saves = p.Saves,
+                    Score = p.Score,
+                    Shots = p.Shots,
+                    Tackleattempts = p.Tackleattempts,
+                    Tacklesmade = p.Tacklesmade,
+                    Vproattr = p.Vproattr,
+                    Vprohackreason = p.Vprohackreason,
+                    Wins = p.Wins,
+                    Pos = p.Pos,
+                    Namespace = p.Namespace,
+                    Stats = p.Player.PlayerMatchStats == null ? null : new PlayerMatchStatsDto
+                    {
+                        Aceleracao = p.Player.PlayerMatchStats.Aceleracao,
+                        Pique = p.Player.PlayerMatchStats.Pique,
+                        Finalizacao = p.Player.PlayerMatchStats.Finalizacao,
+                        Falta = p.Player.PlayerMatchStats.Falta,
+                        Cabeceio = p.Player.PlayerMatchStats.Cabeceio,
+                        ForcaDoChute = p.Player.PlayerMatchStats.ForcaDoChute,
+                        ChuteLonge = p.Player.PlayerMatchStats.ChuteLonge,
+                        Voleio = p.Player.PlayerMatchStats.Voleio,
+                        Penalti = p.Player.PlayerMatchStats.Penalti,
+                        Visao = p.Player.PlayerMatchStats.Visao,
+                        Cruzamento = p.Player.PlayerMatchStats.Cruzamento,
+                        Lancamento = p.Player.PlayerMatchStats.Lancamento,
+                        PasseCurto = p.Player.PlayerMatchStats.PasseCurto,
+                        Curva = p.Player.PlayerMatchStats.Curva,
+                        Agilidade = p.Player.PlayerMatchStats.Agilidade,
+                        Equilibrio = p.Player.PlayerMatchStats.Equilibrio,
+                        PosAtaqueInutil = p.Player.PlayerMatchStats.PosAtaqueInutil,
+                        ControleBola = p.Player.PlayerMatchStats.ControleBola,
+                        Conducao = p.Player.PlayerMatchStats.Conducao,
+                        Interceptacaos = p.Player.PlayerMatchStats.Interceptacaos,
+                        NocaoDefensiva = p.Player.PlayerMatchStats.NocaoDefensiva,
+                        DivididaEmPe = p.Player.PlayerMatchStats.DivididaEmPe,
+                        Carrinho = p.Player.PlayerMatchStats.Carrinho,
+                        Impulsao = p.Player.PlayerMatchStats.Impulsao,
+                        Folego = p.Player.PlayerMatchStats.Folego,
+                        Forca = p.Player.PlayerMatchStats.Forca,
+                        Reacao = p.Player.PlayerMatchStats.Reacao,
+                        Combatividade = p.Player.PlayerMatchStats.Combatividade,
+                        Frieza = p.Player.PlayerMatchStats.Frieza,
+                        ElasticidadeGL = p.Player.PlayerMatchStats.ElasticidadeGL,
+                        ManejoGL = p.Player.PlayerMatchStats.ManejoGL,
+                        ChuteGL = p.Player.PlayerMatchStats.ChuteGL,
+                        ReflexosGL = p.Player.PlayerMatchStats.ReflexosGL,
+                        PosGL = p.Player.PlayerMatchStats.PosGL
+                    }
+                }).ToList()
+            };
+    }
+
+    // ==============================
+    // Helpers
+    // ==============================
+    private static int ClampOpp(int value) =>
+        Math.Min(MaxOpponentPlayers, Math.Max(MinOpponentPlayers, value));
+
+    private static int? ReadOppAliasOrNull(HttpRequest req, int? opponentCount)
+    {
+        if (opponentCount.HasValue) return opponentCount;
+
+        return req.Query.TryGetValue("opp", out var v) && int.TryParse(v, out var parsed)
+            ? parsed
+            : (int?)null;
+    }
+
+    // ==============================
+    // Endpoints
+    // ==============================
+
+    [HttpGet]
+    public async Task<IActionResult> GetAllMatches(CancellationToken ct)
+    {
+        var matches = await _db.Matches
+            .AsNoTracking()
+            .OrderByDescending(m => m.Timestamp)
+            .Select(Proj.Match)                 // projeção server-side (sem Include pesado)
+            .ToListAsync(ct);
+
+        return Ok(matches);
+    }
+
+    [HttpGet("{matchId:long}")]
+    public async Task<IActionResult> GetMatchById(long matchId, CancellationToken ct)
+    {
+        var dto = await _db.Matches
+            .AsNoTracking()
+            .Where(m => m.MatchId == matchId)
+            .Select(Proj.Match)
+            .FirstOrDefaultAsync(ct);
+
+        if (dto is null) return NotFound();
+        return Ok(dto);
     }
 
     [HttpGet("statistics/{matchId:long}")]
-    public async Task<IActionResult> GetMatchStatisticsById(long matchId)
+    public async Task<IActionResult> GetMatchStatisticsById(long matchId, CancellationToken ct)
     {
-        var match = await _dbContext.Matches
-            .Include(m => m.Clubs)
-                .ThenInclude(c => c.Details)
-            .Include(m => m.MatchPlayers)
-                .ThenInclude(mp => mp.Player)
-            .FirstOrDefaultAsync(m => m.MatchId == matchId);
+        // Carrega uma única partida + players + clubs (no-Tracking)
+        var match = await _db.Matches
+            .AsNoTracking()
+            .Include(m => m.Clubs).ThenInclude(c => c.Details)
+            .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+            .FirstOrDefaultAsync(m => m.MatchId == matchId, ct);
 
-        if (match == null)
-            return NotFound("Partida não encontrada.");
+        if (match == null) return NotFound("Partida não encontrada.");
 
         var players = match.MatchPlayers;
+        if (players.Count == 0) return Ok(new FullMatchStatisticsDto());
 
-        if (!players.Any())
-            return Ok(new FullMatchStatisticsDto());
+        // Lookup para evitar N+1 ao buscar nomes/escudos
+        var clubsById = match.Clubs.ToDictionary(c => c.ClubId, c => c);
 
+        // agregações simples (uma partida)
         int totalPlayers = players.Count;
-
         int totalGoals = players.Sum(p => p.Goals);
         int totalAssists = players.Sum(p => p.Assists);
         int totalShots = players.Sum(p => p.Shots);
@@ -315,7 +480,7 @@ public class MatchesController : ControllerBase
         int totalMom = players.Count(p => p.Mom);
         int totalDraws = totalPlayers - totalWins - totalLosses;
 
-        var overallStats = new MatchStatisticsDto
+        var overall = new MatchStatisticsDto
         {
             TotalMatches = 1,
             TotalPlayers = totalPlayers,
@@ -361,9 +526,9 @@ public class MatchesController : ControllerBase
             .GroupBy(p => p.PlayerEntityId)
             .Select(g =>
             {
-                var player = g.First().Player;
+                var first = g.First();
+                var player = first.Player;
                 int matches = g.Count();
-
                 int goals = g.Sum(p => p.Goals);
                 int shots = g.Sum(p => p.Shots);
                 int passesMade = g.Sum(p => p.Passesmade);
@@ -407,25 +572,23 @@ public class MatchesController : ControllerBase
             .GroupBy(p => p.ClubId)
             .Select(g =>
             {
+                var c = clubsById.TryGetValue(g.Key, out var club) ? club : null;
                 int matches = g.Count();
                 int goals = g.Sum(p => p.Goals);
                 int shots = g.Sum(p => p.Shots);
                 int passesMade = g.Sum(p => p.Passesmade);
                 int passAttempts = g.Sum(p => p.Passattempts);
+                int tacklesAttempts = g.Sum(p => p.Tackleattempts);
+                int tacklesMade = g.Sum(p => p.Tacklesmade);
                 int wins = g.Sum(p => p.Wins);
                 int losses = g.Sum(p => p.Losses);
                 int draws = matches - wins - losses;
 
-                // Obtém o clube do jogador e suas informações
-                var club = _dbContext.MatchClubs.FirstOrDefault(c => c.Details.ClubId == g.Key);
-                var clubName = club.Details.Name ?? $"Clube {g.Key}";
-                var crestAssetId = club.Details.CrestAssetId;
-
                 return new ClubStatisticsDto
                 {
                     ClubId = g.Key,
-                    ClubName = clubName, // Nome do clube
-                    ClubCrestAssetId = crestAssetId,
+                    ClubName = c?.Details?.Name ?? $"Clube {g.Key}",
+                    ClubCrestAssetId = c?.Details?.CrestAssetId,
                     MatchesPlayed = matches,
                     TotalGoals = goals,
                     TotalAssists = g.Sum(p => p.Assists),
@@ -444,6 +607,7 @@ public class MatchesController : ControllerBase
                     AvgRating = g.Average(p => p.Rating),
                     WinPercent = matches > 0 ? (wins * 100.0) / matches : 0,
                     PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
+                    TackleSuccessPercent = tacklesAttempts > 0 ? (tacklesMade * 100.0) / tacklesAttempts : 0,
                     GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0
                 };
             })
@@ -451,156 +615,64 @@ public class MatchesController : ControllerBase
 
         return Ok(new FullMatchStatisticsDto
         {
-            Overall = overallStats,
+            Overall = overall,
             Players = playersStats,
             Clubs = clubsStats
         });
     }
 
-
-    [HttpGet("statistics/player/{matchId}/{playerId}")]
-    public async Task<IActionResult> GetPlayerStatisticsByMatchAndPlayer(long matchId, long playerId)
-    {
-        var matchPlayer = await _dbContext.MatchPlayers
-            .Include(mp => mp.Player)
-                .ThenInclude(e => e.PlayerMatchStats)
-            .FirstOrDefaultAsync(mp => mp.MatchId == matchId && mp.PlayerEntityId == playerId);
-
-        if (matchPlayer == null)
-            return NotFound($"Player with id {playerId} not found in match {matchId}.");
-
-        var dto = new MatchPlayerStatsDto
-        {
-            PlayerId = matchPlayer.PlayerEntityId,
-            PlayerName = matchPlayer.Player?.Playername ?? "Desconhecido",
-            Assists = matchPlayer.Assists,
-            CleansheetsAny = matchPlayer.Cleansheetsany,
-            CleansheetsDef = matchPlayer.Cleansheetsdef,
-            CleansheetsGk = matchPlayer.Cleansheetsgk,
-            Goals = matchPlayer.Goals,
-            GoalsConceded = matchPlayer.Goalsconceded,
-            Losses = matchPlayer.Losses,
-            Mom = matchPlayer.Mom,
-            Namespace = matchPlayer.Namespace,
-            PassAttempts = matchPlayer.Passattempts,
-            PassesMade = matchPlayer.Passesmade,
-            PassAccuracy = matchPlayer.Passattempts > 0
-                ? (double)matchPlayer.Passesmade / matchPlayer.Passattempts * 100
-                : 0,
-            Position = matchPlayer.Pos,
-            Rating = matchPlayer.Rating,
-            RealtimeGame = matchPlayer.Realtimegame,
-            RealtimeIdle = matchPlayer.Realtimeidle,
-            RedCards = matchPlayer.Redcards,
-            Saves = matchPlayer.Saves,
-            Score = matchPlayer.Score,
-            Shots = matchPlayer.Shots,
-            TackleAttempts = matchPlayer.Tackleattempts,
-            TacklesMade = matchPlayer.Tacklesmade,
-            VproAttr = matchPlayer.Vproattr,
-            VproHackReason = matchPlayer.Vprohackreason,
-            Wins = matchPlayer.Wins,
-            Statistics = matchPlayer.Player?.PlayerMatchStats != null
-                ? new PlayerMatchStatsDto
-                {
-                    Aceleracao = matchPlayer.Player.PlayerMatchStats.Aceleracao,
-                    Pique = matchPlayer.Player.PlayerMatchStats.Pique,
-                    Finalizacao = matchPlayer.Player.PlayerMatchStats.Finalizacao,
-                    Falta = matchPlayer.Player.PlayerMatchStats.Falta,
-                    Cabeceio = matchPlayer.Player.PlayerMatchStats.Cabeceio,
-                    ForcaDoChute = matchPlayer.Player.PlayerMatchStats.ForcaDoChute,
-                    ChuteLonge = matchPlayer.Player.PlayerMatchStats.ChuteLonge,
-                    Voleio = matchPlayer.Player.PlayerMatchStats.Voleio,
-                    Penalti = matchPlayer.Player.PlayerMatchStats.Penalti,
-                    Visao = matchPlayer.Player.PlayerMatchStats.Visao,
-                    Cruzamento = matchPlayer.Player.PlayerMatchStats.Cruzamento,
-                    Lancamento = matchPlayer.Player.PlayerMatchStats.Lancamento,
-                    PasseCurto = matchPlayer.Player.PlayerMatchStats.PasseCurto,
-                    Curva = matchPlayer.Player.PlayerMatchStats.Curva,
-                    Agilidade = matchPlayer.Player.PlayerMatchStats.Agilidade,
-                    Equilibrio = matchPlayer.Player.PlayerMatchStats.Equilibrio,
-                    PosAtaqueInutil = matchPlayer.Player.PlayerMatchStats.PosAtaqueInutil,
-                    ControleBola = matchPlayer.Player.PlayerMatchStats.ControleBola,
-                    Conducao = matchPlayer.Player.PlayerMatchStats.Conducao,
-                    Interceptacaos = matchPlayer.Player.PlayerMatchStats.Interceptacaos,
-                    NocaoDefensiva = matchPlayer.Player.PlayerMatchStats.NocaoDefensiva,
-                    DivididaEmPe = matchPlayer.Player.PlayerMatchStats.DivididaEmPe,
-                    Carrinho = matchPlayer.Player.PlayerMatchStats.Carrinho,
-                    Impulsao = matchPlayer.Player.PlayerMatchStats.Impulsao,
-                    Folego = matchPlayer.Player.PlayerMatchStats.Folego,
-                    Forca = matchPlayer.Player.PlayerMatchStats.Forca,
-                    Reacao = matchPlayer.Player.PlayerMatchStats.Reacao,
-                    Combatividade = matchPlayer.Player.PlayerMatchStats.Combatividade,
-                    Frieza = matchPlayer.Player.PlayerMatchStats.Frieza,
-                    ElasticidadeGL = matchPlayer.Player.PlayerMatchStats.ElasticidadeGL,
-                    ManejoGL = matchPlayer.Player.PlayerMatchStats.ManejoGL,
-                    ChuteGL = matchPlayer.Player.PlayerMatchStats.ChuteGL,
-                    ReflexosGL = matchPlayer.Player.PlayerMatchStats.ReflexosGL,
-                    PosGL = matchPlayer.Player.PlayerMatchStats.PosGL
-                }
-                : null
-        };
-
-        return Ok(dto);
-    }
-
     [HttpGet("statistics/limited")]
     public async Task<IActionResult> GetMatchStatisticsLimited(
-    [FromQuery] long clubId,
-    [FromQuery] int? opponentCount,
-    [FromQuery] int count = 10)
+        [FromQuery] long clubId,
+        [FromQuery] int? opponentCount,
+        [FromQuery] int count = 10,
+        CancellationToken ct = default)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
         if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
 
-        if (opponentCount.HasValue && (opponentCount < 2 || opponentCount > 11))
-            return BadRequest("opponentCount deve estar entre 2 e 11.");
+        opponentCount = ReadOppAliasOrNull(Request, opponentCount);
+        if (opponentCount.HasValue)
+        {
+            opponentCount = ClampOpp(opponentCount.Value);
+            if (opponentCount < MinOpponentPlayers || opponentCount > MaxOpponentPlayers)
+                return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
+        }
 
-        // Query base: partidas em que o clube participou
-        IQueryable<MatchEntity> query = _dbContext.Matches
-            .Include(m => m.Clubs.Where(c => c.ClubId == clubId))
-                .ThenInclude(c => c.Details)
-            .Include(m => m.MatchPlayers)
-                .ThenInclude(mp => mp.Player)
+        // Query base
+        IQueryable<MatchEntity> query = _db.Matches
+            .AsNoTracking()
+            .Include(m => m.Clubs.Where(c => c.ClubId == clubId)).ThenInclude(c => c.Details)
+            .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
 
+        // Filtro por quantidade de jogadores do adversário
         if (opponentCount.HasValue)
         {
             int oc = opponentCount.Value;
-
-            // Conta jogadores distintos do lado adversário nessa partida
-            // (usa PlayerEntityId para evitar duplicidade)
             query = query.Where(m =>
                 m.MatchPlayers
                  .Where(mp => mp.Player.ClubId != clubId)
                  .Select(mp => mp.PlayerEntityId)
                  .Distinct()
-                 .Count() == oc
-            );
+                 .Count() == oc);
         }
 
-        // Ordena por mais recente e limita pela quantidade solicitada
         var matches = await query
             .OrderByDescending(m => m.Timestamp)
             .Take(count)
-            .ToListAsync();
+            .ToListAsync(ct);
 
-        if (!matches.Any())
-            return Ok(new FullMatchStatisticsDto());
+        if (matches.Count == 0) return Ok(new FullMatchStatisticsDto());
 
-        // Apenas jogadores do clube informado
         var allPlayers = matches.SelectMany(m => m.MatchPlayers)
-            .Where(e => e.Player.ClubId == clubId)
-            .ToList();
+                                .Where(e => e.Player.ClubId == clubId)
+                                .ToList();
 
-        if (!allPlayers.Any())
-            return Ok(new FullMatchStatisticsDto());
+        if (allPlayers.Count == 0) return Ok(new FullMatchStatisticsDto());
 
-        // ==== BASE CORRETA PARA W/D/L E CLEAN SHEETS ====
-        var clubSides = matches
-            .SelectMany(m => m.Clubs)
-            .Where(c => c.ClubId == clubId)
-            .ToList();
+        // Base correta para W/D/L
+        var clubSides = matches.SelectMany(m => m.Clubs).Where(c => c.ClubId == clubId).ToList();
 
         int matchesPlayedByClub = clubSides.Count;
         int winsCount = clubSides.Count(c => c.Goals > c.GoalsAgainst);
@@ -608,14 +680,9 @@ public class MatchesController : ControllerBase
         int drawsCount = matchesPlayedByClub - winsCount - lossesCount;
         int cleanSheetsMatches = clubSides.Count(c => c.GoalsAgainst == 0);
 
-        // MOM por partida (se algum jogador do clube foi MOM naquela partida)
-        int momMatches = matches.Count(m =>
-            m.MatchPlayers.Any(mp => mp.Player.ClubId == clubId && mp.Mom)
-        );
-
+        int momMatches = matches.Count(m => m.MatchPlayers.Any(mp => mp.Player.ClubId == clubId && mp.Mom));
         int distinctPlayersCount = allPlayers.Select(p => p.PlayerEntityId).Distinct().Count();
 
-        // ==== JOGADORES ====
         var playersStats = allPlayers
             .GroupBy(p => p.PlayerEntityId)
             .Select(g =>
@@ -662,7 +729,6 @@ public class MatchesController : ControllerBase
             .OrderByDescending(p => p.MatchesPlayed)
             .ToList();
 
-        // ==== CLUBE (UMA LINHA) ====
         int totalShots = allPlayers.Sum(p => p.Shots);
         int totalPassesMade = allPlayers.Sum(p => p.Passesmade);
         int totalPassAttempts = allPlayers.Sum(p => p.Passattempts);
@@ -675,37 +741,36 @@ public class MatchesController : ControllerBase
         string? crestAssetId = firstSide?.Details?.CrestAssetId;
 
         var clubsStats = new List<ClubStatisticsDto>
-    {
-        new ClubStatisticsDto
         {
-            ClubId = (int)clubId,
-            ClubName = clubName,
-            ClubCrestAssetId = crestAssetId,
-            MatchesPlayed = matchesPlayedByClub,
-            TotalGoals = totalGoals,
-            TotalAssists = allPlayers.Sum(p => p.Assists),
-            TotalShots = totalShots,
-            TotalPassesMade = totalPassesMade,
-            TotalPassAttempts = totalPassAttempts,
-            TotalTacklesMade = totalTacklesMade,
-            TotalTackleAttempts = totalTackleAttempts,
-            TotalWins = winsCount,
-            TotalLosses = lossesCount,
-            TotalDraws = drawsCount,
-            TotalCleanSheets = cleanSheetsMatches,
-            TotalRedCards = allPlayers.Sum(p => p.Redcards),
-            TotalSaves = allPlayers.Sum(p => p.Saves),
-            TotalMom = momMatches,
-            AvgRating = allPlayers.Any() ? allPlayers.Average(p => p.Rating) : 0,
-            WinPercent = matchesPlayedByClub > 0 ? (winsCount * 100.0) / matchesPlayedByClub : 0,
-            PassAccuracyPercent = totalPassAttempts > 0 ? (totalPassesMade * 100.0) / totalPassAttempts : 0,
-            TackleSuccessPercent = totalTackleAttempts > 0 ? (totalTacklesMade * 100.0) / totalTackleAttempts : 0,
-            GoalAccuracyPercent = totalShots > 0 ? (totalGoals * 100.0) / totalShots : 0
-        }
-    };
+            new ClubStatisticsDto
+            {
+                ClubId = (int)clubId,
+                ClubName = clubName,
+                ClubCrestAssetId = crestAssetId,
+                MatchesPlayed = matchesPlayedByClub,
+                TotalGoals = totalGoals,
+                TotalAssists = allPlayers.Sum(p => p.Assists),
+                TotalShots = totalShots,
+                TotalPassesMade = totalPassesMade,
+                TotalPassAttempts = totalPassAttempts,
+                TotalTacklesMade = totalTacklesMade,
+                TotalTackleAttempts = totalTackleAttempts,
+                TotalWins = winsCount,
+                TotalLosses = lossesCount,
+                TotalDraws = drawsCount,
+                TotalCleanSheets = cleanSheetsMatches,
+                TotalRedCards = allPlayers.Sum(p => p.Redcards),
+                TotalSaves = allPlayers.Sum(p => p.Saves),
+                TotalMom = momMatches,
+                AvgRating = allPlayers.Any() ? allPlayers.Average(p => p.Rating) : 0,
+                WinPercent = matchesPlayedByClub > 0 ? (winsCount * 100.0) / matchesPlayedByClub : 0,
+                PassAccuracyPercent = totalPassAttempts > 0 ? (totalPassesMade * 100.0) / totalPassAttempts : 0,
+                TackleSuccessPercent = totalTackleAttempts > 0 ? (totalTacklesMade * 100.0) / totalTackleAttempts : 0,
+                GoalAccuracyPercent = totalShots > 0 ? (totalGoals * 100.0) / totalShots : 0
+            }
+        };
 
-        // ==== OVERALL (do clube) ====
-        var overallStats = new MatchStatisticsDto
+        var overall = new MatchStatisticsDto
         {
             TotalMatches = matchesPlayedByClub,
             TotalPlayers = distinctPlayersCount,
@@ -717,56 +782,48 @@ public class MatchesController : ControllerBase
             TotalTacklesMade = playersStats.Sum(p => p.TotalTacklesMade),
             TotalTackleAttempts = totalTackleAttempts,
             TotalRating = playersStats.Sum(p => p.AvgRating),
-
             TotalWins = winsCount,
             TotalLosses = lossesCount,
             TotalDraws = drawsCount,
-
             TotalCleanSheets = cleanSheetsMatches,
             TotalRedCards = playersStats.Sum(p => p.TotalRedCards),
             TotalSaves = playersStats.Sum(p => p.TotalSaves),
             TotalMom = momMatches,
-
             WinPercent = matchesPlayedByClub > 0 ? (winsCount * 100.0) / matchesPlayedByClub : 0,
             LossPercent = matchesPlayedByClub > 0 ? (lossesCount * 100.0) / matchesPlayedByClub : 0,
             DrawPercent = matchesPlayedByClub > 0 ? (drawsCount * 100.0) / matchesPlayedByClub : 0,
             CleanSheetsPercent = matchesPlayedByClub > 0 ? (cleanSheetsMatches * 100.0) / matchesPlayedByClub : 0,
             MomPercent = matchesPlayedByClub > 0 ? (momMatches * 100.0) / matchesPlayedByClub : 0,
-
             PassAccuracyPercent = totalPassAttempts > 0 ? (playersStats.Sum(p => p.TotalPassesMade) * 100.0) / totalPassAttempts : 0,
             TackleSuccessPercent = totalTackleAttempts > 0 ? (playersStats.Sum(p => p.TotalTacklesMade) * 100.0) / totalTackleAttempts : 0,
             GoalAccuracyPercent = totalShots > 0 ? (playersStats.Sum(p => p.TotalGoals) * 100.0) / totalShots : 0
         };
 
-        return Ok(new FullMatchStatisticsDto
-        {
-            Overall = overallStats,
-            Players = playersStats,
-            Clubs = clubsStats
-        });
+        return Ok(new FullMatchStatisticsDto { Overall = overall, Players = playersStats, Clubs = clubsStats });
     }
 
-
     [HttpGet("statistics")]
-    public async Task<IActionResult> GetMatchStatistics([FromQuery] long clubId)
+    public async Task<IActionResult> GetMatchStatistics([FromQuery] long clubId, CancellationToken ct)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-        var matches = await _dbContext.Matches
-            .Include(m => m.Clubs.Where(c => c.ClubId == clubId))
-                .ThenInclude(c => c.Details)
-            .Include(m => m.MatchPlayers)
-                .ThenInclude(mp => mp.Player)
+        // carrega todas as partidas do clube com no-tracking
+        var matches = await _db.Matches
+            .AsNoTracking()
+            .Include(m => m.Clubs.Where(c => c.ClubId == clubId)).ThenInclude(c => c.Details)
+            .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
             .OrderByDescending(m => m.Timestamp)
-            .ToListAsync();
+            .ToListAsync(ct);
 
         var allPlayers = matches.SelectMany(m => m.MatchPlayers)
-            .Where(e => e.Player.ClubId == clubId)
-            .ToList();
+                                .Where(e => e.Player.ClubId == clubId)
+                                .ToList();
 
-        if (!allPlayers.Any())
-            return Ok(new FullMatchStatisticsDto());
+        if (allPlayers.Count == 0) return Ok(new FullMatchStatisticsDto());
+
+        // lookup de clubs para evitar N+1
+        var clubsById = matches.SelectMany(m => m.Clubs).ToDictionary(c => c.ClubId, c => c);
 
         int distinctPlayers = allPlayers.Select(p => p.PlayerEntityId).Distinct().Count();
         int totalRows = allPlayers.Count;
@@ -787,7 +844,7 @@ public class MatchesController : ControllerBase
         int totalMom = allPlayers.Count(p => p.Mom);
         int totalDraws = totalRows - totalWins - totalLosses;
 
-        var overallStats = new MatchStatisticsDto
+        var overall = new MatchStatisticsDto
         {
             TotalMatches = matches.Count,
             TotalPlayers = distinctPlayers,
@@ -806,7 +863,6 @@ public class MatchesController : ControllerBase
             TotalRedCards = totalRedCards,
             TotalSaves = totalSaves,
             TotalMom = totalMom,
-
             AvgGoals = totalRows > 0 ? totalGoals / (double)totalRows : 0,
             AvgAssists = totalRows > 0 ? totalAssists / (double)totalRows : 0,
             AvgShots = totalRows > 0 ? totalShots / (double)totalRows : 0,
@@ -818,7 +874,6 @@ public class MatchesController : ControllerBase
             AvgRedCards = totalRows > 0 ? totalRedCards / (double)totalRows : 0,
             AvgSaves = totalRows > 0 ? totalSaves / (double)totalRows : 0,
             AvgMom = totalRows > 0 ? totalMom / (double)totalRows : 0,
-
             WinPercent = totalRows > 0 ? (totalWins * 100.0) / totalRows : 0,
             LossPercent = totalRows > 0 ? (totalLosses * 100.0) / totalRows : 0,
             DrawPercent = totalRows > 0 ? (totalDraws * 100.0) / totalRows : 0,
@@ -879,6 +934,7 @@ public class MatchesController : ControllerBase
             .GroupBy(p => p.ClubId)
             .Select(g =>
             {
+                var c = clubsById.TryGetValue(g.Key, out var club) ? club : null;
                 int matchesPlayed = g.Count();
                 int goals = g.Sum(p => p.Goals);
                 int shots = g.Sum(p => p.Shots);
@@ -888,15 +944,11 @@ public class MatchesController : ControllerBase
                 int losses = g.Sum(p => p.Losses);
                 int draws = matchesPlayed - wins - losses;
 
-                var clubRow = _dbContext.MatchClubs.FirstOrDefault(c => c.Details.ClubId == g.Key);
-                var clubName = clubRow?.Details?.Name ?? $"Clube {g.Key}";
-                var crestAssetId = clubRow?.Details?.CrestAssetId;
-
                 return new ClubStatisticsDto
                 {
                     ClubId = g.Key,
-                    ClubName = clubName,
-                    ClubCrestAssetId = crestAssetId,
+                    ClubName = c?.Details?.Name ?? $"Clube {g.Key}",
+                    ClubCrestAssetId = c?.Details?.CrestAssetId,
                     MatchesPlayed = matchesPlayed,
                     TotalGoals = goals,
                     TotalAssists = g.Sum(p => p.Assists),
@@ -921,56 +973,61 @@ public class MatchesController : ControllerBase
             .OrderByDescending(c => c.MatchesPlayed)
             .ToList();
 
-        return Ok(new FullMatchStatisticsDto
-        {
-            Overall = overallStats,
-            Players = playersStats,
-            Clubs = clubsStats
-        });
+        return Ok(new FullMatchStatisticsDto { Overall = overall, Players = playersStats, Clubs = clubsStats });
     }
-
 
     [HttpGet("matches/results")]
     public async Task<IActionResult> GetMatchResults(
         [FromQuery] long clubId,
-        [FromQuery] MatchType matchType = MatchType.All
-    )
+        [FromQuery] MatchType matchType = MatchType.All,
+        [FromQuery] int? opponentCount = null,
+        CancellationToken ct = default)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-        var query = _dbContext.Matches
+        opponentCount = ReadOppAliasOrNull(Request, opponentCount);
+        if (opponentCount.HasValue)
+        {
+            opponentCount = ClampOpp(opponentCount.Value);
+            if (opponentCount < MinOpponentPlayers || opponentCount > MaxOpponentPlayers)
+                return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
+        }
+
+        var q = _db.Matches
+            .AsNoTracking()
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
 
-        if (matchType == MatchType.League)
+        if (matchType == MatchType.League) q = q.Where(m => m.MatchType == MatchType.League);
+        else if (matchType == MatchType.Playoff) q = q.Where(m => m.MatchType == MatchType.Playoff);
+
+        // Filtro opcional por quantidade de jogadores do adversário
+        if (opponentCount.HasValue)
         {
-            query = query.Where(m => m.MatchType == MatchType.League);
-        }
-        else if (matchType == MatchType.Playoff)
-        {
-            query = query.Where(m => m.MatchType == MatchType.Playoff);
+            int oc = opponentCount.Value;
+            q = q.Where(m =>
+                m.MatchPlayers
+                 .Where(mp => mp.Player.ClubId != clubId)
+                 .Select(mp => mp.PlayerEntityId)
+                 .Distinct()
+                 .Count() == oc);
         }
 
-        var matches = await query
-            .Include(m => m.Clubs)
-                .ThenInclude(c => c.Details)
-            .Include(m => m.MatchPlayers)  
+        var matches = await q
+            .Include(m => m.Clubs).ThenInclude(c => c.Details)
+            .Include(m => m.MatchPlayers)
             .OrderByDescending(m => m.Timestamp)
-            .ToListAsync();
+            .ToListAsync(ct);
 
-        var resultList = new List<MatchResultDto>();
+        var resultList = new List<MatchResultDto>(matches.Count);
 
         foreach (var match in matches)
         {
-            var clubs = match.Clubs
-                .OrderBy(c => c.Team)
-                .ToList();
-
+            var clubs = match.Clubs.OrderBy(c => c.Team).ToList();
             if (clubs.Count != 2) continue;
 
             var clubA = clubs[0];
             var clubB = clubs[1];
 
-            // soma de cartões vermelhos por clube no match
             short SumRedCards(long cid) =>
                 (short)((match.MatchPlayers?
                     .Where(p => p.ClubId == cid)
@@ -979,8 +1036,17 @@ public class MatchesController : ControllerBase
             var redA = SumRedCards(clubA.ClubId);
             var redB = SumRedCards(clubB.ClubId);
 
-            var clubAPlayerCount = match.MatchPlayers.Count(mp => mp.ClubId == clubA.ClubId);
-            var clubBPlayerCount = match.MatchPlayers.Count(mp => mp.ClubId == clubB.ClubId);
+            var clubAPlayerCount = match.MatchPlayers
+                .Where(mp => mp.ClubId == clubA.ClubId)
+                .Select(mp => mp.PlayerEntityId)
+                .Distinct()
+                .Count();
+
+            var clubBPlayerCount = match.MatchPlayers
+                .Where(mp => mp.ClubId == clubB.ClubId)
+                .Select(mp => mp.PlayerEntityId)
+                .Distinct()
+                .Count();
 
             var dto = new MatchResultDto
             {
@@ -989,9 +1055,8 @@ public class MatchesController : ControllerBase
 
                 ClubAName = clubA.Details?.Name ?? $"Clube {clubA.ClubId}",
                 ClubAGoals = clubA.Goals,
-                ClubARedCards = redA, 
+                ClubARedCards = redA,
                 ClubAPlayerCount = clubAPlayerCount,
-
                 ClubADetails = clubA.Details == null ? null : new ClubDetailsDto
                 {
                     Name = clubA.Details.Name,
@@ -1024,9 +1089,8 @@ public class MatchesController : ControllerBase
 
                 ClubBName = clubB.Details?.Name ?? $"Clube {clubB.ClubId}",
                 ClubBGoals = clubB.Goals,
-                ClubBRedCards = redB, 
+                ClubBRedCards = redB,
                 ClubBPlayerCount = clubBPlayerCount,
-
                 ClubBDetails = clubB.Details == null ? null : new ClubDetailsDto
                 {
                     Name = clubB.Details.Name,
@@ -1066,53 +1130,61 @@ public class MatchesController : ControllerBase
         return Ok(resultList);
     }
 
-
     [HttpGet("{playerId:long}")]
-    public async Task<IActionResult> GetPlayerById(long playerId)
+    public async Task<IActionResult> GetPlayerById(long playerId, CancellationToken ct)
     {
-        var player = await _dbContext.Players.FirstOrDefaultAsync(p => p.PlayerId == playerId);
-
-        if (player == null)
-            return NotFound();
-
-        return Ok(player);
+        var player = await _db.Players.AsNoTracking().FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
+        return player is null ? NotFound() : Ok(player);
     }
 
-[HttpDelete("{matchId}")]
-public async Task<IActionResult> DeleteMatch(long matchId)
-{
-    var match = await _dbContext.Matches
-        .Include(m => m.MatchPlayers)
-        .Include(m => m.Clubs)
-        .FirstOrDefaultAsync(m => m.MatchId == matchId);
-
-    if (match == null)
+    [HttpDelete("{matchId:long}")]
+    public async Task<IActionResult> DeleteMatch(long matchId, CancellationToken ct)
     {
-        return NotFound(new { message = "Partida não encontrada" });
+        var match = await _db.Matches
+            .Include(m => m.MatchPlayers)
+            .Include(m => m.Clubs)
+            .FirstOrDefaultAsync(m => m.MatchId == matchId, ct);
+
+        if (match == null)
+            return NotFound(new { message = "Partida não encontrada" });
+
+        var matchPlayers = await _db.MatchPlayers
+            .Where(mp => mp.MatchId == matchId)
+            .ToListAsync(ct);
+
+        var statsIds = matchPlayers.Select(mp => mp.PlayerMatchStatsEntityId).ToList();
+        var playerMatchStats = await _db.PlayerMatchStats
+            .Where(pms => statsIds.Contains(pms.Id))
+            .ToListAsync(ct);
+
+        _db.PlayerMatchStats.RemoveRange(playerMatchStats);
+        _db.MatchPlayers.RemoveRange(matchPlayers);
+
+        var matchClubs = await _db.MatchClubs.Where(mc => mc.MatchId == matchId).ToListAsync(ct);
+        _db.MatchClubs.RemoveRange(matchClubs);
+
+        _db.Matches.Remove(match);
+        await _db.SaveChangesAsync(ct);
+
+        return NoContent();
     }
 
-    var matchPlayers = await _dbContext.MatchPlayers
-        .Where(mp => mp.MatchId == matchId)
-        .ToListAsync();
+    [HttpGet("statistics/player/{matchId:long}/{playerId:long}")]
+    public async Task<IActionResult> GetPlayerStatisticsByMatchAndPlayer(
+    long matchId,
+    long playerId,
+    CancellationToken ct)
+    {
+        var dto = await _db.MatchPlayers
+            .AsNoTracking()
+            .Where(mp => mp.MatchId == matchId && mp.PlayerEntityId == playerId)
+            .Select(Proj.MatchPlayerStatsRow)   // projeção server-side
+            .FirstOrDefaultAsync(ct);
 
-    var playerMatchStatsIds = matchPlayers.Select(mp => mp.PlayerMatchStatsEntityId).ToList();
-    var playerMatchStats = await _dbContext.PlayerMatchStats
-        .Where(pms => playerMatchStatsIds.Contains(pms.Id))
-        .ToListAsync();
+        if (dto == null)
+            return NotFound($"Player with id {playerId} not found in match {matchId}.");
 
-    _dbContext.PlayerMatchStats.RemoveRange(playerMatchStats);
-    _dbContext.MatchPlayers.RemoveRange(matchPlayers);
+        return Ok(dto);
+    }
 
-    var matchClubs = await _dbContext.MatchClubs
-        .Where(mc => mc.MatchId == matchId)
-        .ToListAsync();
-
-    _dbContext.MatchClubs.RemoveRange(matchClubs);
-
-    _dbContext.Matches.Remove(match);
-
-    await _dbContext.SaveChangesAsync();
-
-    return NoContent();
-}
 }
