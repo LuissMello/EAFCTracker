@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System;
 using System.Linq;
 using System.Net.Http;
@@ -17,13 +18,13 @@ public class ClubMatchService
         _db = db;
     }
 
-    public async Task FetchAndStoreMatchesAsync(string clubId, string matchType)
+    public async Task FetchAndStoreMatchesAsync(string clubId, string matchType, CancellationToken ct)
     {
         List<Match> matches = await FetchMatches(clubId, matchType);
 
         foreach (Match match in matches)
         {
-            await SaveMatchAsync(match, matchType);
+            await SaveMatchAsync(match, matchType, ct);
         }
     }
 
@@ -58,421 +59,273 @@ public class ClubMatchService
         return null;
     }
 
-    public async Task SaveMatchAsync(Match match, string matchType)
+    public async Task SaveMatchAsync(Match match, string matchType, CancellationToken ct = default)
     {
-        if (match == null || string.IsNullOrEmpty(match.MatchId))
+        if (match == null || string.IsNullOrWhiteSpace(match.MatchId))
             throw new ArgumentException("Match inválido.");
 
         long matchId = Convert.ToInt64(match.MatchId);
 
-        if (await _db.Matches.AnyAsync(m => m.MatchId == matchId))
+        // já existe? não reinsere
+        if (await _db.Matches.AnyAsync(m => m.MatchId == matchId, ct))
             return;
 
-        var matchEntity = new MatchEntity
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            MatchId = matchId,
-            MatchType = matchType == "leagueMatch" ? MatchType.League : MatchType.Playoff,
-            Timestamp = DateTimeOffset.FromUnixTimeSeconds(match.Timestamp).UtcDateTime,
-        };
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-        await _db.Matches.AddAsync(matchEntity);
-
-        // === CLUBES ===
-        var clubIds = match.Clubs?.Keys.Select(long.Parse).ToList() ?? new List<long>();
-
-        foreach (var entry in match.Clubs)
-        {
-            long clubId = long.Parse(entry.Key);
-            var club = entry.Value;
-
-            var details = new ClubDetailsEntity
-            {
-                ClubId = clubId,
-                Name = club.Details?.Name,
-                RegionId = club.Details?.RegionId ?? 0,
-                TeamId = club.Details?.TeamId ?? 0,
-                StadName = club.Details?.CustomKit?.StadName,
-                KitId = club.Details?.CustomKit?.KitId,
-                CustomKitId = club.Details?.CustomKit?.CustomKitId,
-                CustomAwayKitId = club.Details?.CustomKit?.CustomAwayKitId,
-                CustomThirdKitId = club.Details?.CustomKit?.CustomThirdKitId,
-                CustomKeeperKitId = club.Details?.CustomKit?.CustomKeeperKitId,
-                KitColor1 = club.Details?.CustomKit?.KitColor1,
-                KitColor2 = club.Details?.CustomKit?.KitColor2,
-                KitColor3 = club.Details?.CustomKit?.KitColor3,
-                KitColor4 = club.Details?.CustomKit?.KitColor4,
-                KitAColor1 = club.Details?.CustomKit?.KitAColor1,
-                KitAColor2 = club.Details?.CustomKit?.KitAColor2,
-                KitAColor3 = club.Details?.CustomKit?.KitAColor3,
-                KitAColor4 = club.Details?.CustomKit?.KitAColor4,
-                KitThrdColor1 = club.Details?.CustomKit?.KitThrdColor1,
-                KitThrdColor2 = club.Details?.CustomKit?.KitThrdColor2,
-                KitThrdColor3 = club.Details?.CustomKit?.KitThrdColor3,
-                KitThrdColor4 = club.Details?.CustomKit?.KitThrdColor4,
-                DCustomKit = club.Details?.CustomKit?.DCustomKit,
-                CrestColor = club.Details?.CustomKit?.CrestColor,
-                CrestAssetId = club.Details?.CustomKit?.CrestAssetId,
-                SelectedKitType = club.Details?.CustomKit?.SelectedKitType
-
-            };
-
-            var matchClub = new MatchClubEntity
+            // ===================== 1) MATCH =====================
+            var matchEntity = new MatchEntity
             {
                 MatchId = matchId,
-                ClubId = clubId,
-                Date = DateTimeOffset.FromUnixTimeSeconds(Convert.ToInt64(club.Date)).UtcDateTime,
-                GameNumber = Convert.ToInt32(club.GameNumber),
-                Goals = Convert.ToInt16(club.Goals),
-                GoalsAgainst = Convert.ToInt16(club.GoalsAgainst),
-                Losses = Convert.ToInt16(club.Losses),
-                MatchType = Convert.ToInt16(club.MatchType),
-                Result = Convert.ToInt16(club.Result),
-                Score = Convert.ToInt16(club.Score),
-                SeasonId = Convert.ToInt16(club.SeasonId),
-                Team = Convert.ToInt32(club.TEAM),
-                Ties = Convert.ToInt16(club.Ties),
-                Wins = Convert.ToInt16(club.Wins),
-                WinnerByDnf = club.WinnerByDnf == "1",
-                Details = details
+                MatchType = matchType == "leagueMatch" ? MatchType.League : MatchType.Playoff,
+                Timestamp = DateTimeOffset.FromUnixTimeSeconds(match.Timestamp).UtcDateTime,
             };
+            await _db.Matches.AddAsync(matchEntity, ct);
 
-            await _db.MatchClubs.AddAsync(matchClub);
-        }
-
-        // === JOGADORES ===
-        var matchPlayerEntities = new List<MatchPlayerEntity>();
-
-        if (match.Players != null)
-        {
-            var playerKeys = match.Players
-                .SelectMany(club => club.Value.Select(player => (PlayerId: long.Parse(player.Key), ClubId: long.Parse(club.Key))))
-                .ToList();
-
-            var existingPlayers = await _db.Players
-                .Where(p => playerKeys.Select(k => k.PlayerId).Contains(p.PlayerId))
-                .ToDictionaryAsync(p => (p.PlayerId, p.ClubId));
-
-            foreach (var clubEntry in match.Players)
+            // ===================== 2) CLUBES =====================
+            if (match.Clubs != null)
             {
-                long clubId = long.Parse(clubEntry.Key);
-
-                foreach (var playerEntry in clubEntry.Value)
+                foreach (var entry in match.Clubs)
                 {
-                    long playerId = long.Parse(playerEntry.Key);
-                    var data = playerEntry.Value;
-                    var key = (playerId, clubId);
+                    long clubId = long.Parse(entry.Key);
+                    var club = entry.Value;
 
-                    if (!existingPlayers.TryGetValue(key, out var playerEntity))
+                    var details = new ClubDetailsEntity
                     {
-                        playerEntity = new PlayerEntity
-                        {
-                            PlayerId = playerId,
-                            ClubId = clubId,
-                            Playername = data.Playername
-                        };
-                        await _db.Players.AddAsync(playerEntity);
-                        await _db.SaveChangesAsync();
-                        existingPlayers.Add(key, playerEntity);
-                    }
-                    else if (playerEntity.Playername != data.Playername)
-                    {
-                        playerEntity.Playername = data.Playername;
-                        _db.Players.Update(playerEntity);
-                    }
+                        ClubId = clubId,
+                        Name = club.Details?.Name,
+                        RegionId = club.Details?.RegionId ?? 0,
+                        TeamId = club.Details?.TeamId ?? 0,
+                        StadName = club.Details?.CustomKit?.StadName,
+                        KitId = club.Details?.CustomKit?.KitId,
+                        CustomKitId = club.Details?.CustomKit?.CustomKitId,
+                        CustomAwayKitId = club.Details?.CustomKit?.CustomAwayKitId,
+                        CustomThirdKitId = club.Details?.CustomKit?.CustomThirdKitId,
+                        CustomKeeperKitId = club.Details?.CustomKit?.CustomKeeperKitId,
+                        KitColor1 = club.Details?.CustomKit?.KitColor1,
+                        KitColor2 = club.Details?.CustomKit?.KitColor2,
+                        KitColor3 = club.Details?.CustomKit?.KitColor3,
+                        KitColor4 = club.Details?.CustomKit?.KitColor4,
+                        KitAColor1 = club.Details?.CustomKit?.KitAColor1,
+                        KitAColor2 = club.Details?.CustomKit?.KitAColor2,
+                        KitAColor3 = club.Details?.CustomKit?.KitAColor3,
+                        KitAColor4 = club.Details?.CustomKit?.KitAColor4,
+                        KitThrdColor1 = club.Details?.CustomKit?.KitThrdColor1,
+                        KitThrdColor2 = club.Details?.CustomKit?.KitThrdColor2,
+                        KitThrdColor3 = club.Details?.CustomKit?.KitThrdColor3,
+                        KitThrdColor4 = club.Details?.CustomKit?.KitThrdColor4,
+                        DCustomKit = club.Details?.CustomKit?.DCustomKit,
+                        CrestColor = club.Details?.CustomKit?.CrestColor,
+                        CrestAssetId = club.Details?.CustomKit?.CrestAssetId,
+                        SelectedKitType = club.Details?.CustomKit?.SelectedKitType
+                    };
 
-                    var parsedStats = PlayerMatchStatsEntity.Parse(data.Vproattr);
-
-                    var lastStats = await _db.PlayerMatchStats
-                        .Where(s => s.PlayerEntityId == playerEntity.Id)
-                        .OrderByDescending(s => s.Id)
-                        .FirstOrDefaultAsync();
-
-                    long statsId;
-                    if (lastStats == null || !parsedStats.IsEqualTo(lastStats))
-                    {
-                        parsedStats.PlayerEntityId = playerEntity.Id;
-                        await _db.PlayerMatchStats.AddAsync(parsedStats);
-                        await _db.SaveChangesAsync();
-                        statsId = parsedStats.Id;
-                        playerEntity.PlayerMatchStatsId = parsedStats.Id;
-                        _db.Players.Update(playerEntity);
-                    }
-                    else
-                    {
-                        statsId = lastStats.Id;
-                    }
-
-                    matchPlayerEntities.Add(new MatchPlayerEntity
+                    var mc = new MatchClubEntity
                     {
                         MatchId = matchId,
                         ClubId = clubId,
-                        PlayerEntityId = playerEntity.Id,
-                        PlayerMatchStatsEntityId = statsId,
-                        Assists = Convert.ToInt16(data.Assists),
-                        Cleansheetsany = Convert.ToInt16(data.Cleansheetsany),
-                        Cleansheetsdef = Convert.ToInt16(data.Cleansheetsdef),
-                        Cleansheetsgk = Convert.ToInt16(data.Cleansheetsgk),
-                        Goals = Convert.ToInt16(data.Goals),
-                        Goalsconceded = Convert.ToInt16(data.Goalsconceded),
-                        Losses = Convert.ToInt16(data.Losses),
-                        Mom = data.Mom == "1",
-                        Namespace = Convert.ToInt16(data.Namespace),
-                        Passattempts = Convert.ToInt16(data.Passattempts),
-                        Passesmade = Convert.ToInt16(data.Passesmade),
-                        Pos = data.Pos,
-                        Rating = Convert.ToDouble(data.Rating),
-                        Realtimegame = data.Realtimegame,
-                        Realtimeidle = data.Realtimeidle,
-                        Redcards = Convert.ToInt16(data.Redcards),
-                        Saves = Convert.ToInt16(data.Saves),
-                        Score = Convert.ToInt16(data.Score),
-                        Shots = Convert.ToInt16(data.Shots),
-                        Tackleattempts = Convert.ToInt16(data.Tackleattempts),
-                        Tacklesmade = Convert.ToInt16(data.Tacklesmade),
-                        Vproattr = data.Vproattr,
-                        Vprohackreason = data.Vprohackreason,
-                        Wins = Convert.ToInt16(data.Wins)
-                    });
+                        Date = DateTimeOffset.FromUnixTimeSeconds(Convert.ToInt64(club.Date)).UtcDateTime,
+                        GameNumber = Convert.ToInt32(club.GameNumber),
+                        Goals = Convert.ToInt16(club.Goals),
+                        GoalsAgainst = Convert.ToInt16(club.GoalsAgainst),
+                        Losses = Convert.ToInt16(club.Losses),
+                        MatchType = Convert.ToInt16(club.MatchType),
+                        Result = Convert.ToInt16(club.Result),
+                        Score = Convert.ToInt16(club.Score),
+                        SeasonId = Convert.ToInt16(club.SeasonId),
+                        Team = Convert.ToInt32(club.TEAM),
+                        Ties = Convert.ToInt16(club.Ties),
+                        Wins = Convert.ToInt16(club.Wins),
+                        WinnerByDnf = club.WinnerByDnf == "1",
+                        Details = details
+                    };
+
+                    await _db.MatchClubs.AddAsync(mc, ct);
                 }
             }
-        }
 
-        await _db.MatchPlayers.AddRangeAsync(matchPlayerEntities);
-        await _db.SaveChangesAsync();
+            // ===================== 3) PLAYERS =====================
+            var playerKeys = match.Players?
+                .SelectMany(club => club.Value.Select(p => (PlayerId: long.Parse(p.Key), ClubId: long.Parse(club.Key))))
+                .Distinct()
+                .ToList() ?? new();
+
+            var playerIds = playerKeys.Select(k => k.PlayerId).Distinct().ToList();
+            var clubIds = playerKeys.Select(k => k.ClubId).Distinct().ToList();
+
+            var existingPlayers = await _db.Players
+                .Where(p => playerIds.Contains(p.PlayerId) && clubIds.Contains(p.ClubId))
+                .ToDictionaryAsync(p => (p.PlayerId, p.ClubId), ct);
+
+            var toInsertPlayers = new List<PlayerEntity>();
+
+            if (match.Players != null)
+            {
+                foreach (var clubEntry in match.Players)
+                {
+                    long cid = long.Parse(clubEntry.Key);
+
+                    foreach (var playerEntry in clubEntry.Value)
+                    {
+                        long pid = long.Parse(playerEntry.Key);
+                        var data = playerEntry.Value;
+                        var key = (pid, cid);
+
+                        if (!existingPlayers.TryGetValue(key, out var pe))
+                        {
+                            pe = new PlayerEntity
+                            {
+                                PlayerId = pid,
+                                ClubId = cid,
+                                Playername = data.Playername
+                            };
+                            toInsertPlayers.Add(pe);
+                            existingPlayers[key] = pe; // reserva
+                        }
+                        else if (pe.Playername != data.Playername)
+                        {
+                            pe.Playername = data.Playername; // update
+                        }
+                    }
+                }
+            }
+
+            var prevAuto = _db.ChangeTracker.AutoDetectChangesEnabled;
+            _db.ChangeTracker.AutoDetectChangesEnabled = false;
+            try
+            {
+                if (toInsertPlayers.Count > 0)
+                    await _db.Players.AddRangeAsync(toInsertPlayers, ct);
+
+                // 1º Save: garante IDs de Match, MatchClubs e Players
+                await _db.SaveChangesAsync(ct);
+            }
+            finally
+            {
+                _db.ChangeTracker.AutoDetectChangesEnabled = prevAuto;
+            }
+
+            // ===================== 4) STATS + MATCHPLAYERS =====================
+            var statsToInsert = new List<PlayerMatchStatsEntity>();
+            var matchPlayerRows = new List<MatchPlayerEntity>();
+
+            if (match.Players != null)
+            {
+                foreach (var clubEntry in match.Players)
+                {
+                    long cid = long.Parse(clubEntry.Key);
+
+                    foreach (var playerEntry in clubEntry.Value)
+                    {
+                        long pid = long.Parse(playerEntry.Key);
+                        var data = playerEntry.Value;
+                        var p = existingPlayers[(pid, cid)]; // já tem Id
+
+                        // pega última stats do jogador
+                        var lastStats = await _db.PlayerMatchStats
+                            .Where(s => s.PlayerEntityId == p.Id)
+                            .OrderByDescending(s => s.Id)
+                            .FirstOrDefaultAsync(ct);
+
+                        long statsId;
+                        var parsed = PlayerMatchStatsEntity.Parse(data.Vproattr);
+                        if (lastStats == null || !parsed.IsEqualTo(lastStats))
+                        {
+                            parsed.PlayerEntityId = p.Id;
+                            statsToInsert.Add(parsed);
+                            statsId = 0; // preencheremos depois do Save
+                        }
+                        else
+                        {
+                            statsId = lastStats.Id;
+                        }
+
+                        matchPlayerRows.Add(new MatchPlayerEntity
+                        {
+                            MatchId = matchId,
+                            ClubId = cid,
+                            PlayerEntityId = p.Id,
+                            PlayerMatchStatsEntityId = statsId, // 0 se ainda será criado
+                            Assists = SafeShort(data.Assists),
+                            Cleansheetsany = SafeShort(data.Cleansheetsany),
+                            Cleansheetsdef = SafeShort(data.Cleansheetsdef),
+                            Cleansheetsgk = SafeShort(data.Cleansheetsgk),
+                            Goals = SafeShort(data.Goals),
+                            Goalsconceded = SafeShort(data.Goalsconceded),
+                            Losses = SafeShort(data.Losses),
+                            Mom = data.Mom == "1",
+                            Namespace = SafeShort(data.Namespace),
+                            Passattempts = SafeShort(data.Passattempts),
+                            Passesmade = SafeShort(data.Passesmade),
+                            Pos = data.Pos ?? "",
+                            Rating = SafeDouble(data.Rating),
+                            Realtimegame = data.Realtimegame ?? "",
+                            Realtimeidle = data.Realtimeidle ?? "",
+                            Redcards = SafeShort(data.Redcards),
+                            Saves = SafeShort(data.Saves),
+                            Score = SafeShort(data.Score),
+                            Shots = SafeShort(data.Shots),
+                            Tackleattempts = SafeShort(data.Tackleattempts),
+                            Tacklesmade = SafeShort(data.Tacklesmade),
+                            Vproattr = data.Vproattr ?? "",
+                            Vprohackreason = data.Vprohackreason ?? "",
+                            Wins = SafeShort(data.Wins)
+                        });
+                    }
+                }
+            }
+
+            if (statsToInsert.Count > 0)
+            {
+                await _db.PlayerMatchStats.AddRangeAsync(statsToInsert, ct);
+                await _db.SaveChangesAsync(ct);
+
+                // mapeia os stats recém-criados por jogador (pega o último por Player)
+                var newPlayerIds = statsToInsert.Select(x => x.PlayerEntityId).Distinct().ToList();
+
+                var latestByPlayer = await _db.PlayerMatchStats
+                    .Where(s => newPlayerIds.Contains(s.PlayerEntityId))
+                    .GroupBy(s => s.PlayerEntityId)
+                    .Select(g => g.OrderByDescending(s => s.Id).First())
+                    .ToDictionaryAsync(s => s.PlayerEntityId, ct);
+
+                // preenche FK pendente nos MatchPlayers
+                foreach (var row in matchPlayerRows.Where(r => r.PlayerMatchStatsEntityId == 0))
+                    row.PlayerMatchStatsEntityId = latestByPlayer[row.PlayerEntityId].Id;
+
+                // atualiza o "stats atual" do Player (apenas a FK)
+                foreach (var kv in latestByPlayer)
+                {
+                    var playerId = kv.Key;
+                    var stats = kv.Value;
+                    // pega o player tracked
+                    var player = await _db.Players.FirstAsync(p => p.Id == playerId, ct);
+                    player.PlayerMatchStatsId = stats.Id; // só FK; sem mexer na navigation
+                    _db.Players.Update(player);
+                }
+
+                await _db.SaveChangesAsync(ct);
+            }
+
+            // evita colisão de PK (MatchId, ClubId, PlayerEntityId)
+            matchPlayerRows = matchPlayerRows
+                .DistinctBy(r => new { r.MatchId, r.ClubId, r.PlayerEntityId })
+                .ToList();
+
+            await _db.MatchPlayers.AddRangeAsync(matchPlayerRows, ct);
+
+            // ===================== 5) SAVE FINAL =====================
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        });
     }
 
+    // Helpers de parsing defensivo (evita exceções por string vazia/null)
+    private static short SafeShort(object value)
+        => short.TryParse(Convert.ToString(value), out var s) ? s : (short)0;
 
-    //private async Task<List<MatchClubEntity>> MapClubsAsync(Match match)
-    //{
-    //    var result = new List<MatchClubEntity>();
-    //    if (match.Clubs == null) return result;
-
-    //    long matchId = Convert.ToInt64(match.MatchId);
-
-    //    var clubIds = match.Clubs.Keys
-    //        .Where(k => long.TryParse(k, out _))
-    //        .Select(k => long.Parse(k))
-    //        .ToList();
-
-    //    // Carrega os ClubDetails existentes no banco
-    //    var existingDetails = await _db.ClubDetails
-    //        .Where(cd => clubIds.Contains(cd.ClubId))
-    //        .ToDictionaryAsync(cd => cd.ClubId);
-
-    //    foreach (var entry in match.Clubs)
-    //    {
-    //        if (!long.TryParse(entry.Key, out var clubId)) continue;
-    //        var club = entry.Value;
-
-    //        ClubDetailsEntity clubDetails;
-    //        if (existingDetails.TryGetValue(clubId, out var existingDetail))
-    //        {
-    //            // Atualiza os campos da entidade existente
-    //            existingDetail.Name = club.Details?.Name;
-    //            existingDetail.RegionId = club.Details?.RegionId ?? 0;
-    //            existingDetail.TeamId = club.Details?.TeamId ?? 0;
-    //            existingDetail.StadName = club.Details?.CustomKit?.StadName;
-    //            existingDetail.KitId = club.Details?.CustomKit?.KitId;
-    //            existingDetail.CustomKitId = club.Details?.CustomKit?.CustomKitId;
-    //            existingDetail.CustomAwayKitId = club.Details?.CustomKit?.CustomAwayKitId;
-    //            existingDetail.CustomThirdKitId = club.Details?.CustomKit?.CustomThirdKitId;
-    //            existingDetail.CustomKeeperKitId = club.Details?.CustomKit?.CustomKeeperKitId;
-    //            existingDetail.KitColor1 = club.Details?.CustomKit?.KitColor1;
-    //            existingDetail.KitColor2 = club.Details?.CustomKit?.KitColor2;
-    //            existingDetail.KitColor3 = club.Details?.CustomKit?.KitColor3;
-    //            existingDetail.KitColor4 = club.Details?.CustomKit?.KitColor4;
-    //            existingDetail.KitAColor1 = club.Details?.CustomKit?.KitAColor1;
-    //            existingDetail.KitAColor2 = club.Details?.CustomKit?.KitAColor2;
-    //            existingDetail.KitAColor3 = club.Details?.CustomKit?.KitAColor3;
-    //            existingDetail.KitAColor4 = club.Details?.CustomKit?.KitAColor4;
-    //            existingDetail.KitThrdColor1 = club.Details?.CustomKit?.KitThrdColor1;
-    //            existingDetail.KitThrdColor2 = club.Details?.CustomKit?.KitThrdColor2;
-    //            existingDetail.KitThrdColor3 = club.Details?.CustomKit?.KitThrdColor3;
-    //            existingDetail.KitThrdColor4 = club.Details?.CustomKit?.KitThrdColor4;
-    //            existingDetail.DCustomKit = club.Details?.CustomKit?.DCustomKit;
-    //            existingDetail.CrestColor = club.Details?.CustomKit?.CrestColor;
-    //            existingDetail.CrestAssetId = club.Details?.CustomKit?.CrestAssetId;
-
-    //            _db.ClubDetails.Update(existingDetail);
-    //            clubDetails = existingDetail;
-    //        }
-    //        else
-    //        {
-    //            // Cria nova entidade se não existir
-    //            clubDetails = new ClubDetailsEntity
-    //            {
-    //                ClubId = clubId,
-    //                Name = club.Details?.Name,
-    //                RegionId = club.Details?.RegionId ?? 0,
-    //                TeamId = club.Details?.TeamId ?? 0,
-    //                StadName = club.Details?.CustomKit?.StadName,
-    //                KitId = club.Details?.CustomKit?.KitId,
-    //                CustomKitId = club.Details?.CustomKit?.CustomKitId,
-    //                CustomAwayKitId = club.Details?.CustomKit?.CustomAwayKitId,
-    //                CustomThirdKitId = club.Details?.CustomKit?.CustomThirdKitId,
-    //                CustomKeeperKitId = club.Details?.CustomKit?.CustomKeeperKitId,
-    //                KitColor1 = club.Details?.CustomKit?.KitColor1,
-    //                KitColor2 = club.Details?.CustomKit?.KitColor2,
-    //                KitColor3 = club.Details?.CustomKit?.KitColor3,
-    //                KitColor4 = club.Details?.CustomKit?.KitColor4,
-    //                KitAColor1 = club.Details?.CustomKit?.KitAColor1,
-    //                KitAColor2 = club.Details?.CustomKit?.KitAColor2,
-    //                KitAColor3 = club.Details?.CustomKit?.KitAColor3,
-    //                KitAColor4 = club.Details?.CustomKit?.KitAColor4,
-    //                KitThrdColor1 = club.Details?.CustomKit?.KitThrdColor1,
-    //                KitThrdColor2 = club.Details?.CustomKit?.KitThrdColor2,
-    //                KitThrdColor3 = club.Details?.CustomKit?.KitThrdColor3,
-    //                KitThrdColor4 = club.Details?.CustomKit?.KitThrdColor4,
-    //                DCustomKit = club.Details?.CustomKit?.DCustomKit,
-    //                CrestColor = club.Details?.CustomKit?.CrestColor,
-    //                CrestAssetId = club.Details?.CustomKit?.CrestAssetId
-    //            };
-
-    //            await _db.ClubDetails.AddAsync(clubDetails);
-    //        }
-
-    //        var clubEntity = new MatchClubEntity
-    //        {
-    //            MatchId = matchId,
-    //            ClubId = clubId,
-    //            Date = DateTimeOffset.FromUnixTimeSeconds(Convert.ToInt64(club.Date)).UtcDateTime,
-    //            GameNumber = Convert.ToInt32(club.GameNumber),
-    //            Goals = Convert.ToInt16(club.Goals),
-    //            GoalsAgainst = Convert.ToInt16(club.GoalsAgainst),
-    //            Losses = Convert.ToInt16(club.Losses),
-    //            MatchType = Convert.ToInt16(club.MatchType),
-    //            Result = Convert.ToInt16(club.Result),
-    //            Score = Convert.ToInt16(club.Score),
-    //            SeasonId = Convert.ToInt16(club.SeasonId),
-    //            Team = Convert.ToInt32(club.TEAM),
-    //            Ties = Convert.ToInt16(club.Ties),
-    //            WinnerByDnf = club.WinnerByDnf == "1",
-    //            Wins = Convert.ToInt16(club.Wins),
-    //            Details = clubDetails
-    //        };
-
-    //        result.Add(clubEntity);
-    //    }
-
-    //    return result;
-    //}
-
-    //private async Task<List<MatchPlayerEntity>> MapPlayersAsync(Match match)
-    //{
-    //    var result = new List<MatchPlayerEntity>();
-    //    if (match.Players == null) return result;
-
-    //    long matchId = Convert.ToInt64(match.MatchId);
-
-    //    var playerKeys = match.Players
-    //        .SelectMany(c => c.Value, (club, player) => (
-    //            PlayerId: long.Parse(player.Key),
-    //            ClubId: long.Parse(club.Key)))
-    //        .ToList();
-
-    //    var existingPlayers = await _db.Players
-    //        .Where(p => playerKeys.Select(k => k.PlayerId).Contains(p.PlayerId))
-    //        .ToDictionaryAsync(p => (p.PlayerId, p.ClubId));
-
-    //    foreach (var clubEntry in match.Players)
-    //    {
-    //        if (!long.TryParse(clubEntry.Key, out var clubId)) continue;
-
-    //        foreach (var playerEntry in clubEntry.Value)
-    //        {
-    //            if (!long.TryParse(playerEntry.Key, out var playerId)) continue;
-
-    //            var playerData = playerEntry.Value;
-    //            var key = (playerId, clubId);
-
-    //            PlayerEntity playerEntity;
-
-    //            if (existingPlayers.TryGetValue(key, out var existing))
-    //            {
-    //                // Atualiza nome se tiver mudado
-    //                if (existing.Playername != playerData.Playername)
-    //                {
-    //                    existing.Playername = playerData.Playername;
-    //                    _db.Players.Update(existing);
-    //                }
-
-    //                playerEntity = existing;
-    //            }
-    //            else
-    //            {
-    //                playerEntity = new PlayerEntity
-    //                {
-    //                    ClubId = clubId,
-    //                    PlayerId = playerId,
-    //                    Playername = playerData.Playername
-    //                };
-
-    //                await _db.Players.AddAsync(playerEntity);
-    //                await _db.SaveChangesAsync(); // necessário para gerar o ID
-
-    //                existingPlayers.Add(key, playerEntity);
-    //            }
-
-    //            var playerMatch = new MatchPlayerEntity
-    //            {
-    //                MatchId = matchId,
-    //                ClubId = clubId,
-    //                PlayerEntityId = playerEntity.Id,
-    //                Assists = Convert.ToInt16(playerData.Assists),
-    //                Cleansheetsany = Convert.ToInt16(playerData.Cleansheetsany),
-    //                Cleansheetsdef = Convert.ToInt16(playerData.Cleansheetsdef),
-    //                Cleansheetsgk = Convert.ToInt16(playerData.Cleansheetsgk),
-    //                Goals = Convert.ToInt16(playerData.Goals),
-    //                Goalsconceded = Convert.ToInt16(playerData.Goalsconceded),
-    //                Losses = Convert.ToInt16(playerData.Losses),
-    //                Mom = playerData.Mom == "1",
-    //                Namespace = Convert.ToInt16(playerData.Namespace),
-    //                Passattempts = Convert.ToInt16(playerData.Passattempts),
-    //                Passesmade = Convert.ToInt16(playerData.Passesmade),
-    //                Pos = playerData.Pos,
-    //                Rating = Convert.ToDouble(playerData.Rating),
-    //                Realtimegame = playerData.Realtimegame,
-    //                Realtimeidle = playerData.Realtimeidle,
-    //                Redcards = Convert.ToInt16(playerData.Redcards),
-    //                Saves = Convert.ToInt16(playerData.Saves),
-    //                Score = Convert.ToInt16(playerData.Score),
-    //                Shots = Convert.ToInt16(playerData.Shots),
-    //                Tackleattempts = Convert.ToInt16(playerData.Tackleattempts),
-    //                Tacklesmade = Convert.ToInt16(playerData.Tacklesmade),
-    //                Vproattr = playerData.Vproattr,
-    //                Vprohackreason = playerData.Vprohackreason,
-    //                Wins = Convert.ToInt16(playerData.Wins),
-    //            };
-
-    //            // Gerenciar estatísticas (PlayerMatchStats)
-    //            var parsedStats = PlayerMatchStatsEntity.Parse(playerData.Vproattr);
-
-    //            var lastStats = await _db.PlayerMatchStats
-    //                .Where(s => s.PlayerEntityId == playerEntity.Id)
-    //                .OrderByDescending(s => s.Id)
-    //                .FirstOrDefaultAsync();
-
-    //            if (lastStats == null || !parsedStats.IsEqualTo(lastStats))
-    //            {
-    //                parsedStats.PlayerEntityId = playerEntity.Id;
-    //                await _db.PlayerMatchStats.AddAsync(parsedStats);
-    //                await _db.SaveChangesAsync();
-
-    //                playerEntity.PlayerMatchStatsId = parsedStats.Id;
-    //                _db.Players.Update(playerEntity);
-
-    //                playerMatch.PlayerMatchStatsEntityId = parsedStats.Id;
-    //            }
-    //            else
-    //            {
-    //                playerMatch.PlayerMatchStatsEntityId = lastStats.Id;
-    //            }
-
-    //            result.Add(playerMatch);
-    //        }
-    //    }
-
-    //    return result;
-    //}
-
+    private static double SafeDouble(object value)
+        => double.TryParse(Convert.ToString(value), out var d) ? d : 0.0;
 }

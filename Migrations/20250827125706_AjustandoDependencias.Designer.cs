@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -10,9 +11,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EAFCMatchTracker.Migrations
 {
     [DbContext(typeof(EAFCContext))]
-    partial class EAFCContextModelSnapshot : ModelSnapshot
+    [Migration("20250827125706_AjustandoDependencias")]
+    partial class AjustandoDependencias
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -76,8 +79,7 @@ namespace EAFCMatchTracker.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MatchId", "ClubId")
-                        .IsUnique();
+                    b.HasIndex("MatchId", "ClubId");
 
                     b.ToTable("MatchClubs");
                 });

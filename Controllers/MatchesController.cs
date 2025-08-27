@@ -1169,6 +1169,72 @@ public class MatchesController : ControllerBase
         return NoContent();
     }
 
+    [HttpDelete("clubs/{clubId:long}/matches")]
+    public async Task<IActionResult> DeleteMatchesByClub(long clubId, CancellationToken ct)
+    {
+        var clubExists = await _db.MatchClubs.AnyAsync(c => c.ClubId == clubId, ct);
+        if (!clubExists)
+            return NotFound(new { message = "Clube não encontrado" });
+
+        var matchIds = await _db.MatchClubs
+            .Where(mc => mc.ClubId == clubId)
+            .Select(mc => mc.MatchId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        if (matchIds.Count == 0)
+            return NoContent();
+
+        // >>> TUDO dentro da execution strategy <<<
+        var strategy = _db.Database.CreateExecutionStrategy();
+
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            try
+            {
+                // Coleta ids de stats
+                var statsIds = await _db.MatchPlayers
+                    .Where(mp => matchIds.Contains(mp.MatchId))
+                    .Select(mp => mp.PlayerMatchStatsEntityId)
+                    .Where(id => id != null)
+                    .Cast<long>()
+                    .Distinct()
+                    .ToListAsync(ct);
+
+                // Deleções (EF Core 7+)
+                await _db.PlayerMatchStats
+                    .Where(pms => statsIds.Contains(pms.Id))
+                    .ExecuteDeleteAsync(ct);
+
+                await _db.MatchPlayers
+                    .Where(mp => matchIds.Contains(mp.MatchId))
+                    .ExecuteDeleteAsync(ct);
+
+                await _db.MatchClubs
+                    .Where(mc => matchIds.Contains(mc.MatchId))
+                    .ExecuteDeleteAsync(ct);
+
+                await _db.Matches
+                    .Where(m => matchIds.Contains(m.MatchId))
+                    .ExecuteDeleteAsync(ct);
+
+                // ExecuteDeleteAsync aplica direto no DB; SaveChanges é dispensável aqui,
+                // mas não faz mal manter se você misturar com RemoveRange.
+                // await _db.SaveChangesAsync(ct);
+
+                await tx.CommitAsync(ct);
+            }
+            catch
+            {
+                await tx.RollbackAsync(ct);
+                throw;
+            }
+        });
+
+        return NoContent();
+    }
+
     [HttpGet("statistics/player/{matchId:long}/{playerId:long}")]
     public async Task<IActionResult> GetPlayerStatisticsByMatchAndPlayer(
     long matchId,
