@@ -54,8 +54,8 @@ public class ClubMatchBackgroundService : BackgroundService
                         try
                         {
                             _logger.LogInformation("Buscando partidas para ClubId={ClubId}...", clubId);
-                            await matchService.FetchAndStoreMatchesAsync(clubId, "leagueMatch");
-                            await matchService.FetchAndStoreMatchesAsync(clubId, "playoffMatch");
+                            //await matchService.FetchAndStoreMatchesAsync(clubId, "leagueMatch");
+                            //await matchService.FetchAndStoreMatchesAsync(clubId, "playoffMatch");
                             _logger.LogInformation("Concluído para ClubId={ClubId}.", clubId);
                         }
                         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
