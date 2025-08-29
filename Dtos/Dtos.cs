@@ -26,39 +26,7 @@ public class MatchClubDto
 
     public ClubDetailsDto Details { get; set; }
 }
-
-public class ClubDetailsDto
-{
-    public string Name { get; set; }
-    public long ClubId { get; set; }
-    public long RegionId { get; set; }
-    public long TeamId { get; set; }
-    public string StadName { get; set; }
-
-    // Propriedades de CustomKit
-    public string KitId { get; set; }
-    public string CustomKitId { get; set; }
-    public string CustomAwayKitId { get; set; }
-    public string CustomThirdKitId { get; set; }
-    public string CustomKeeperKitId { get; set; }
-    public string KitColor1 { get; set; }
-    public string KitColor2 { get; set; }
-    public string KitColor3 { get; set; }
-    public string KitColor4 { get; set; }
-    public string KitAColor1 { get; set; }
-    public string KitAColor2 { get; set; }
-    public string KitAColor3 { get; set; }
-    public string KitAColor4 { get; set; }
-    public string KitThrdColor1 { get; set; }
-    public string KitThrdColor2 { get; set; }
-    public string KitThrdColor3 { get; set; }
-    public string KitThrdColor4 { get; set; }
-    public string DCustomKit { get; set; }
-    public string CrestColor { get; set; }
-    public string CrestAssetId { get; set; }
-    public string SelectedKitType { get; set; }
-}
-
+ 
 public class MatchPlayerDto
 {
     public long PlayerId { get; set; }
@@ -273,25 +241,74 @@ public class FullMatchStatisticsDto
     public List<ClubStatisticsDto> Clubs { get; set; }
 }
 
-public class MatchResultDto
+public sealed class ClubDetailsDto
+{
+    public string? Name { get; set; }
+    public long ClubId { get; set; }
+    public long RegionId { get; set; }
+    public long TeamId { get; set; }
+    public string? StadName { get; set; }
+
+    public string? KitId { get; set; }
+    public string? CustomKitId { get; set; }
+    public string? CustomAwayKitId { get; set; }
+    public string? CustomThirdKitId { get; set; }
+    public string? CustomKeeperKitId { get; set; }
+    public string? KitColor1 { get; set; }
+    public string? KitColor2 { get; set; }
+    public string? KitColor3 { get; set; }
+    public string? KitColor4 { get; set; }
+    public string? KitAColor1 { get; set; }
+    public string? KitAColor2 { get; set; }
+    public string? KitAColor3 { get; set; }
+    public string? KitAColor4 { get; set; }
+    public string? KitThrdColor1 { get; set; }
+    public string? KitThrdColor2 { get; set; }
+    public string? KitThrdColor3 { get; set; }
+    public string? KitThrdColor4 { get; set; }
+    public string? DCustomKit { get; set; }
+    public string? CrestColor { get; set; }
+    public string? CrestAssetId { get; set; }
+    public string? SelectedKitType { get; set; }
+}
+
+public sealed class ClubMatchSummaryDto
+{
+    public short RedCards { get; set; }
+    public bool HadHatTrick { get; set; }
+
+    // nomes (podem conter null se o Player estiver ausente)
+    public List<string?> HatTrickPlayerNames { get; set; } = new();
+
+    // único goleiro do clube (nome ou null)
+    public string? GoalkeeperPlayerName { get; set; }
+
+    // único Man of the Match do jogo, preenchido apenas no clube correto (nome ou null)
+    public string? ManOfTheMatchPlayerName { get; set; }
+}
+
+public sealed class MatchResultDto
 {
     public long MatchId { get; set; }
     public DateTime Timestamp { get; set; }
 
-    public string ClubAName { get; set; }
+    public string ClubAName { get; set; } = default!;
     public short ClubAGoals { get; set; }
-    public short ClubARedCards { get; set; }   
+    public short ClubARedCards { get; set; }  // mantido por retrocompatibilidade
     public int ClubAPlayerCount { get; set; }
-    public ClubDetailsDto ClubADetails { get; set; }
+    public ClubDetailsDto? ClubADetails { get; set; }
+    public ClubMatchSummaryDto ClubASummary { get; set; } = new();
 
-    public string ClubBName { get; set; }
+    public string ClubBName { get; set; } = default!;
     public short ClubBGoals { get; set; }
-    public short ClubBRedCards { get; set; }  
+    public short ClubBRedCards { get; set; }  // mantido por retrocompatibilidade
     public int ClubBPlayerCount { get; set; }
-    public ClubDetailsDto ClubBDetails { get; set; }
+    public ClubDetailsDto? ClubBDetails { get; set; }
+    public ClubMatchSummaryDto ClubBSummary { get; set; } = new();
 
-    public string ResultText { get; set; }
+    public string ResultText { get; set; } = default!;
 }
+
 
 public class CalendarDaySummaryDto
 {

@@ -993,7 +993,7 @@ public class MatchesController : ControllerBase
                 return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
         }
 
-        var q = _db.Matches
+        IQueryable<MatchEntity> q = _db.Matches
             .AsNoTracking()
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
 
@@ -1014,9 +1014,129 @@ public class MatchesController : ControllerBase
 
         var matches = await q
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
-            .Include(m => m.MatchPlayers)
+            .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .OrderByDescending(m => m.Timestamp)
             .ToListAsync(ct);
+
+        // ===== Helpers (aderentes às suas entities) =====
+        static bool IsGkByPos(string pos)
+        {
+            if (string.IsNullOrWhiteSpace(pos)) return false;
+            var p = pos.Trim().ToUpperInvariant();
+            return p == "GK" || p == "GOL" || p == "GOALKEEPER" || p == "GOLEIRO";
+        }
+
+        static string? GetPlayerNameFromMatch(MatchEntity match, long playerEntityId) =>
+            match.MatchPlayers
+                 .Where(mp => mp.PlayerEntityId == playerEntityId)
+                 .Select(mp => mp.Player?.Playername)
+                 .FirstOrDefault();
+
+        static (long PlayerId, string? Name)? PickGoalkeeperForClub(MatchEntity match, long cid)
+        {
+            var gkCandidates = match.MatchPlayers
+                .Where(mp => mp.ClubId == cid && IsGkByPos(mp.Pos))
+                .GroupBy(mp => mp.PlayerEntityId)
+                .Select(g => new
+                {
+                    PlayerId = g.Key,
+                    CleanSheetsGk = g.Sum(x => (int)x.Cleansheetsgk),
+                    Saves = g.Sum(x => (int)x.Saves),
+                    Rating = g.Max(x => x.Rating),
+                    Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
+                })
+                .ToList();
+
+            if (gkCandidates.Count == 0) return null;
+            if (gkCandidates.Count == 1) return (gkCandidates[0].PlayerId, gkCandidates[0].Name);
+
+            var picked = gkCandidates
+                .OrderByDescending(x => x.CleanSheetsGk)
+                .ThenByDescending(x => x.Saves)
+                .ThenByDescending(x => x.Rating)
+                .ThenBy(x => x.PlayerId)
+                .First();
+
+            return (picked.PlayerId, picked.Name);
+        }
+
+        static long? GetManOfTheMatchId(MatchEntity match)
+        {
+            var all = match.MatchPlayers;
+
+            var flagged = all
+                .Where(mp => mp.Mom)
+                .Select(mp => new
+                {
+                    mp.PlayerEntityId,
+                    mp.Rating,
+                    Score = (int)mp.Goals + (int)mp.Assists
+                })
+                .ToList();
+
+            if (flagged.Count == 1) return flagged[0].PlayerEntityId;
+            if (flagged.Count > 1)
+                return flagged
+                    .OrderByDescending(x => x.Rating)
+                    .ThenByDescending(x => x.Score)
+                    .ThenBy(x => x.PlayerEntityId)
+                    .First().PlayerEntityId;
+
+            var best = all
+                .Select(mp => new
+                {
+                    mp.PlayerEntityId,
+                    mp.Rating,
+                    Score = (int)mp.Goals + (int)mp.Assists
+                })
+                .OrderByDescending(x => x.Rating)
+                .ThenByDescending(x => x.Score)
+                .ThenBy(x => x.PlayerEntityId)
+                .FirstOrDefault();
+
+            return best?.PlayerEntityId;
+        }
+
+        static short SumRedCardsForClub(MatchEntity match, long cid) =>
+            (short)(match.MatchPlayers.Where(p => p.ClubId == cid).Sum(p => (int)p.Redcards));
+
+        static ClubMatchSummaryDto BuildClubSummaryNames(
+            MatchEntity match, long cid, short redCards, long? motmId)
+        {
+            var clubPlayers = match.MatchPlayers.Where(mp => mp.ClubId == cid).ToList();
+
+            // Hat-trick (nomes; null quando Player estiver ausente)
+            var hatTrickNames = clubPlayers
+                .GroupBy(mp => mp.PlayerEntityId)
+                .Select(g => new
+                {
+                    PlayerId = g.Key,
+                    Goals = g.Sum(x => (int)x.Goals),
+                    Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
+                })
+                .Where(x => x.Goals >= 3)
+                .Select(x => x.Name) // string? (pode ser null)
+                .ToList();
+
+            // Goleiro (pega nome)
+            var gkPicked = PickGoalkeeperForClub(match, cid);
+            var gkName = gkPicked?.Name;
+
+            // MotM: só preenche no clube correto (nome ou null)
+            string? motmName = null;
+            if (motmId.HasValue && clubPlayers.Any(mp => mp.PlayerEntityId == motmId.Value))
+                motmName = GetPlayerNameFromMatch(match, motmId.Value);
+
+            return new ClubMatchSummaryDto
+            {
+                RedCards = redCards,
+                HadHatTrick = hatTrickNames.Count > 0,
+                HatTrickPlayerNames = hatTrickNames,
+                GoalkeeperPlayerName = gkName,
+                ManOfTheMatchPlayerName = motmName
+            };
+        }
+        // ===== fim helpers =====
 
         var resultList = new List<MatchResultDto>(matches.Count);
 
@@ -1028,13 +1148,8 @@ public class MatchesController : ControllerBase
             var clubA = clubs[0];
             var clubB = clubs[1];
 
-            short SumRedCards(long cid) =>
-                (short)((match.MatchPlayers?
-                    .Where(p => p.ClubId == cid)
-                    .Sum(p => (int?)p.Redcards) ?? 0));
-
-            var redA = SumRedCards(clubA.ClubId);
-            var redB = SumRedCards(clubB.ClubId);
+            var redA = SumRedCardsForClub(match, clubA.ClubId);
+            var redB = SumRedCardsForClub(match, clubB.ClubId);
 
             var clubAPlayerCount = match.MatchPlayers
                 .Where(mp => mp.ClubId == clubA.ClubId)
@@ -1048,6 +1163,13 @@ public class MatchesController : ControllerBase
                 .Distinct()
                 .Count();
 
+            // MotM global (único) — ID usado só para localizar o nome no clube correto
+            var motmId = GetManOfTheMatchId(match);
+
+            // Resumos por clube (com nomes)
+            var clubASummary = BuildClubSummaryNames(match, clubA.ClubId, redA, motmId);
+            var clubBSummary = BuildClubSummaryNames(match, clubB.ClubId, redB, motmId);
+
             var dto = new MatchResultDto
             {
                 MatchId = match.MatchId,
@@ -1059,7 +1181,7 @@ public class MatchesController : ControllerBase
                 ClubAPlayerCount = clubAPlayerCount,
                 ClubADetails = clubA.Details == null ? null : new ClubDetailsDto
                 {
-                    Name = clubA.Details.Name,
+                    Name = clubA.Details.Name ?? $"Clube {clubA.ClubId}",
                     ClubId = clubA.ClubId,
                     RegionId = clubA.Details.RegionId,
                     TeamId = clubA.Details.TeamId,
@@ -1086,6 +1208,7 @@ public class MatchesController : ControllerBase
                     CrestAssetId = clubA.Details.CrestAssetId,
                     SelectedKitType = clubA.Details.SelectedKitType
                 },
+                ClubASummary = clubASummary,
 
                 ClubBName = clubB.Details?.Name ?? $"Clube {clubB.ClubId}",
                 ClubBGoals = clubB.Goals,
@@ -1093,7 +1216,7 @@ public class MatchesController : ControllerBase
                 ClubBPlayerCount = clubBPlayerCount,
                 ClubBDetails = clubB.Details == null ? null : new ClubDetailsDto
                 {
-                    Name = clubB.Details.Name,
+                    Name = clubB.Details.Name ?? $"Clube {clubB.ClubId}",
                     ClubId = clubB.ClubId,
                     RegionId = clubB.Details.RegionId,
                     TeamId = clubB.Details.TeamId,
@@ -1120,6 +1243,7 @@ public class MatchesController : ControllerBase
                     CrestAssetId = clubB.Details.CrestAssetId,
                     SelectedKitType = clubB.Details.SelectedKitType
                 },
+                ClubBSummary = clubBSummary,
 
                 ResultText = $"{clubA.Details?.Name ?? "Clube A"} {clubA.Goals} x {clubB.Goals} {clubB.Details?.Name ?? "Clube B"}"
             };
