@@ -1,3 +1,5 @@
+using EAFCMatchTracker.Interfaces;
+using EAFCMatchTracker.Services;
 using Microsoft.EntityFrameworkCore;
 using System;
 
@@ -55,6 +57,8 @@ builder.Services.AddDbContext<EAFCContext>(options =>
     options.EnableSensitiveDataLogging();
     options.LogTo(Console.WriteLine, LogLevel.Information);
 });
+
+builder.Services.AddScoped<IClubMatchService, ClubMatchService>();
 
 
 var app = builder.Build();

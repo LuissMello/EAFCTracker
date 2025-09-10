@@ -1,11 +1,10 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using EAFCMatchTracker.Interfaces;
 using Microsoft.EntityFrameworkCore;
-using System;
-using System.Linq;
-using System.Net.Http;
 using System.Text.Json;
 
-public class ClubMatchService
+namespace EAFCMatchTracker.Services;
+
+public class ClubMatchService : IClubMatchService
 {
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _config;
@@ -59,7 +58,7 @@ public class ClubMatchService
         return null;
     }
 
-    public async Task SaveMatchAsync(Match match, string matchType, CancellationToken ct = default)
+    private async Task SaveMatchAsync(Match match, string matchType, CancellationToken ct = default)
     {
         if (match == null || string.IsNullOrWhiteSpace(match.MatchId))
             throw new ArgumentException("Match inválido.");
