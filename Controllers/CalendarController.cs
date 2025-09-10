@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
+namespace EAFCMatchTracker.Controllers;
+
 [ApiController]
 [Route("api/[controller]")]
 public class CalendarController : ControllerBase
@@ -56,7 +58,7 @@ public class CalendarController : ControllerBase
         [FromQuery] long clubId)
     {
         if (clubId <= 0)
-            return BadRequest("ID do clube inválido."); 
+            return BadRequest("ID do clube inválido.");
 
         var dayStart = date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         var dayEnd = dayStart.AddDays(1);
@@ -191,9 +193,9 @@ public class CalendarController : ControllerBase
             TotalSaves = saves,
             TotalMom = moms,
             AvgRating = avgRating,
-            PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
-            TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
-            GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0
+            PassAccuracyPercent = passAttempts > 0 ? passesMade * 100.0 / passAttempts : 0,
+            TackleSuccessPercent = tackleAttempts > 0 ? tacklesMade * 100.0 / tackleAttempts : 0,
+            GoalAccuracyPercent = shots > 0 ? goals * 100.0 / shots : 0
         };
     }
 
