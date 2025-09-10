@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
+namespace EAFCMatchTracker.Controllers;
+
 [ApiController]
 [Route("api/[controller]")]
 public class TrendsController : ControllerBase
@@ -123,10 +125,10 @@ public class TrendsController : ControllerBase
                 Shots = shots,
                 PassesMade = passesMade,
                 PassAttempts = passAttempts,
-                PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
+                PassAccuracyPercent = passAttempts > 0 ? passesMade * 100.0 / passAttempts : 0,
                 TacklesMade = tacklesMade,
                 TackleAttempts = tackleAttempts,
-                TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
+                TackleSuccessPercent = tackleAttempts > 0 ? tacklesMade * 100.0 / tackleAttempts : 0,
                 AvgRating = avgRating,
                 MomOccurred = rows.Any(r => r.Mom)
             });
