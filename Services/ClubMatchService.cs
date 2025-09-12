@@ -1,6 +1,7 @@
 ﻿using EAFCMatchTracker.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using System.Linq;
 
 namespace EAFCMatchTracker.Services;
 
@@ -30,32 +31,23 @@ public class ClubMatchService : IClubMatchService
     private async Task<List<Match>> FetchMatches(string clubId, string matchType)
     {
         var endpointTemplate = _config["EAFCSettings:ClubMatchesEndpoint"];
-        var endpoint = new Uri(_config["EAFCSettings:BaseUrl"]) + string.Format(endpointTemplate, clubId, matchType);
+        var baseUrl = _config["EAFCSettings:BaseUrl"];
+        var endpoint = new Uri(baseUrl) + string.Format(endpointTemplate, clubId, matchType);
 
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PostmanRuntime/7.36.0");
         _httpClient.DefaultRequestHeaders.Connection.ParseAdd("keep-alive");
 
-        try
+        var response = await _httpClient.GetAsync(endpoint);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadAsStringAsync();
+
+        var matches = JsonSerializer.Deserialize<List<Match>>(json, new JsonSerializerOptions
         {
-            var response = await _httpClient.GetAsync(endpoint);
-            response.EnsureSuccessStatusCode();
+            PropertyNameCaseInsensitive = true
+        }) ?? new List<Match>();
 
-            var json = await response.Content.ReadAsStringAsync();
-
-            List<Match>? matches = JsonSerializer.Deserialize<List<Match>>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            }) ?? throw new Exception();
-
-            return matches;
-
-        }
-        catch (Exception ex)
-        {
-
-            throw;
-        }
-        return null;
+        return matches;
     }
 
     private async Task SaveMatchAsync(Match match, string matchType, CancellationToken ct = default)
@@ -65,7 +57,6 @@ public class ClubMatchService : IClubMatchService
 
         long matchId = Convert.ToInt64(match.MatchId);
 
-        // já existe? não reinsere
         if (await _db.Matches.AnyAsync(m => m.MatchId == matchId, ct))
             return;
 
@@ -74,7 +65,6 @@ public class ClubMatchService : IClubMatchService
         {
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-            // ===================== 1) MATCH =====================
             var matchEntity = new MatchEntity
             {
                 MatchId = matchId,
@@ -83,7 +73,6 @@ public class ClubMatchService : IClubMatchService
             };
             await _db.Matches.AddAsync(matchEntity, ct);
 
-            // ===================== 2) CLUBES =====================
             if (match.Clubs != null)
             {
                 foreach (var entry in match.Clubs)
@@ -121,6 +110,9 @@ public class ClubMatchService : IClubMatchService
                         SelectedKitType = club.Details?.CustomKit?.SelectedKitType
                     };
 
+                    // >>> NOVO: buscar e persistir Overall do clube <<<
+                    await FetchAndUpsertOverallStatsAsync(clubId, ct);
+
                     var mc = new MatchClubEntity
                     {
                         MatchId = matchId,
@@ -145,7 +137,6 @@ public class ClubMatchService : IClubMatchService
                 }
             }
 
-            // ===================== 3) PLAYERS =====================
             var playerKeys = match.Players?
                 .SelectMany(club => club.Value.Select(p => (PlayerId: long.Parse(p.Key), ClubId: long.Parse(club.Key))))
                 .Distinct()
@@ -181,11 +172,11 @@ public class ClubMatchService : IClubMatchService
                                 Playername = data.Playername
                             };
                             toInsertPlayers.Add(pe);
-                            existingPlayers[key] = pe; // reserva
+                            existingPlayers[key] = pe;
                         }
                         else if (pe.Playername != data.Playername)
                         {
-                            pe.Playername = data.Playername; // update
+                            pe.Playername = data.Playername;
                         }
                     }
                 }
@@ -198,7 +189,6 @@ public class ClubMatchService : IClubMatchService
                 if (toInsertPlayers.Count > 0)
                     await _db.Players.AddRangeAsync(toInsertPlayers, ct);
 
-                // 1º Save: garante IDs de Match, MatchClubs e Players
                 await _db.SaveChangesAsync(ct);
             }
             finally
@@ -206,7 +196,6 @@ public class ClubMatchService : IClubMatchService
                 _db.ChangeTracker.AutoDetectChangesEnabled = prevAuto;
             }
 
-            // ===================== 4) STATS + MATCHPLAYERS =====================
             var statsToInsert = new List<PlayerMatchStatsEntity>();
             var matchPlayerRows = new List<MatchPlayerEntity>();
 
@@ -220,9 +209,8 @@ public class ClubMatchService : IClubMatchService
                     {
                         long pid = long.Parse(playerEntry.Key);
                         var data = playerEntry.Value;
-                        var p = existingPlayers[(pid, cid)]; // já tem Id
+                        var p = existingPlayers[(pid, cid)];
 
-                        // pega última stats do jogador
                         var lastStats = await _db.PlayerMatchStats
                             .Where(s => s.PlayerEntityId == p.Id)
                             .OrderByDescending(s => s.Id)
@@ -234,7 +222,7 @@ public class ClubMatchService : IClubMatchService
                         {
                             parsed.PlayerEntityId = p.Id;
                             statsToInsert.Add(parsed);
-                            statsId = 0; // preencheremos depois do Save
+                            statsId = 0;
                         }
                         else
                         {
@@ -246,7 +234,7 @@ public class ClubMatchService : IClubMatchService
                             MatchId = matchId,
                             ClubId = cid,
                             PlayerEntityId = p.Id,
-                            PlayerMatchStatsEntityId = statsId, // 0 se ainda será criado
+                            PlayerMatchStatsEntityId = statsId,
                             Assists = SafeShort(data.Assists),
                             Cleansheetsany = SafeShort(data.Cleansheetsany),
                             Cleansheetsdef = SafeShort(data.Cleansheetsdef),
@@ -281,7 +269,6 @@ public class ClubMatchService : IClubMatchService
                 await _db.PlayerMatchStats.AddRangeAsync(statsToInsert, ct);
                 await _db.SaveChangesAsync(ct);
 
-                // mapeia os stats recém-criados por jogador (pega o último por Player)
                 var newPlayerIds = statsToInsert.Select(x => x.PlayerEntityId).Distinct().ToList();
 
                 var latestByPlayer = await _db.PlayerMatchStats
@@ -290,41 +277,115 @@ public class ClubMatchService : IClubMatchService
                     .Select(g => g.OrderByDescending(s => s.Id).First())
                     .ToDictionaryAsync(s => s.PlayerEntityId, ct);
 
-                // preenche FK pendente nos MatchPlayers
                 foreach (var row in matchPlayerRows.Where(r => r.PlayerMatchStatsEntityId == 0))
                     row.PlayerMatchStatsEntityId = latestByPlayer[row.PlayerEntityId].Id;
 
-                // atualiza o "stats atual" do Player (apenas a FK)
                 foreach (var kv in latestByPlayer)
                 {
                     var playerId = kv.Key;
                     var stats = kv.Value;
-                    // pega o player tracked
                     var player = await _db.Players.FirstAsync(p => p.Id == playerId, ct);
-                    player.PlayerMatchStatsId = stats.Id; // só FK; sem mexer na navigation
+                    player.PlayerMatchStatsId = stats.Id;
                     _db.Players.Update(player);
                 }
 
                 await _db.SaveChangesAsync(ct);
             }
 
-            // evita colisão de PK (MatchId, ClubId, PlayerEntityId)
             matchPlayerRows = matchPlayerRows
                 .DistinctBy(r => new { r.MatchId, r.ClubId, r.PlayerEntityId })
                 .ToList();
 
             await _db.MatchPlayers.AddRangeAsync(matchPlayerRows, ct);
 
-            // ===================== 5) SAVE FINAL =====================
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
         });
     }
 
-    // Helpers de parsing defensivo (evita exceções por string vazia/null)
     private static short SafeShort(object value)
         => short.TryParse(Convert.ToString(value), out var s) ? s : (short)0;
 
     private static double SafeDouble(object value)
         => double.TryParse(Convert.ToString(value), out var d) ? d : 0.0;
+
+    // ===== NOVO: Overall =====
+
+    private async Task FetchAndUpsertOverallStatsAsync(long clubId, CancellationToken ct)
+    {
+        try
+        {
+            var baseUrl = _config["EAFCSettings:BaseUrl"];
+            var endpointTpl = _config["EAFCSettings:OverallStatsEndpoint"]
+                              ?? _config["OverallStatsEndpoint"]
+                              ?? "/clubs/overallStats?platform=common-gen5&clubIds={0}";
+
+            var uri = new Uri($"{baseUrl.TrimEnd('/')}/{string.Format(endpointTpl, clubId).TrimStart('/')}");
+
+            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PostmanRuntime/7.36.0");
+            _httpClient.DefaultRequestHeaders.Connection.ParseAdd("keep-alive");
+
+            using var resp = await _httpClient.GetAsync(uri, ct);
+            if (!resp.IsSuccessStatusCode) return;
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+            List<OverallStats>? list = null;
+            try
+            {
+                list = JsonSerializer.Deserialize<List<OverallStats>>(json, options);
+            }
+            catch
+            {
+                var one = JsonSerializer.Deserialize<OverallStats>(json, options);
+                if (one != null) list = new List<OverallStats> { one };
+            }
+
+            if (list == null || list.Count == 0) return;
+
+            var src = list[0];
+            var existing = await _db.OverallStats.FirstOrDefaultAsync(x => x.ClubId == clubId, ct);
+
+            if (existing == null)
+            {
+                var entity = MapToEntity(clubId, src);
+                await _db.OverallStats.AddAsync(entity, ct);
+            }
+            else
+            {
+                MapToEntity(clubId, src, existing);
+                _db.OverallStats.Update(existing);
+            }
+
+            await _db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // Silencioso por robustez: falha no overall não deve interromper o ingest de partidas
+        }
+    }
+
+    private static OverallStatsEntity MapToEntity(long clubId, OverallStats src, OverallStatsEntity? target = null)
+    {
+        var o = target ?? new OverallStatsEntity { ClubId = clubId };
+        o.BestDivision = src.BestDivision;
+        o.BestFinishGroup = src.BestFinishGroup;
+        o.GamesPlayed = src.GamesPlayed;
+        o.GamesPlayedPlayoff = src.GamesPlayedPlayoff;
+        o.Goals = src.Goals;
+        o.GoalsAgainst = src.GoalsAgainst;
+        o.Promotions = src.Promotions;
+        o.Relegations = src.Relegations;
+        o.Losses = src.Losses;
+        o.Ties = src.Ties;
+        o.Wins = src.Wins;
+        o.Wstreak = src.Wstreak;
+        o.Unbeatenstreak = src.Unbeatenstreak;
+        o.SkillRating = src.SkillRating;
+        o.Reputationtier = src.Reputationtier;
+        o.LeagueAppearances = src.LeagueAppearances;
+        o.UpdatedAtUtc = DateTime.UtcNow;
+        return o;
+    }
 }

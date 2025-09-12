@@ -1,0 +1,273 @@
+﻿using System.Linq.Expressions;
+
+namespace EAFCMatchTracker;
+
+public static class DtoProjections
+{
+    public static readonly Expression<Func<ClubDetailsEntity, ClubDetailsDto>> ClubDetails =
+        d => new ClubDetailsDto
+        {
+            Name = d.Name,
+            RegionId = d.RegionId,
+            TeamId = d.TeamId,
+            StadName = d.StadName,
+            KitId = d.KitId,
+            CustomKitId = d.CustomKitId,
+            CustomAwayKitId = d.CustomAwayKitId,
+            CustomThirdKitId = d.CustomThirdKitId,
+            CustomKeeperKitId = d.CustomKeeperKitId,
+            KitColor1 = d.KitColor1,
+            KitColor2 = d.KitColor2,
+            KitColor3 = d.KitColor3,
+            KitColor4 = d.KitColor4,
+            KitAColor1 = d.KitAColor1,
+            KitAColor2 = d.KitAColor2,
+            KitAColor3 = d.KitAColor3,
+            KitAColor4 = d.KitAColor4,
+            KitThrdColor1 = d.KitThrdColor1,
+            KitThrdColor2 = d.KitThrdColor2,
+            KitThrdColor3 = d.KitThrdColor3,
+            KitThrdColor4 = d.KitThrdColor4,
+            DCustomKit = d.DCustomKit,
+            CrestColor = d.CrestColor,
+            CrestAssetId = d.CrestAssetId,
+            SelectedKitType = d.SelectedKitType,
+            ClubId = d.ClubId
+        };
+
+    public static readonly Expression<Func<PlayerMatchStatsEntity, PlayerMatchStatsDto>> PlayerMatchStats =
+        s => new PlayerMatchStatsDto
+        {
+            Aceleracao = s.Aceleracao,
+            Pique = s.Pique,
+            Finalizacao = s.Finalizacao,
+            Falta = s.Falta,
+            Cabeceio = s.Cabeceio,
+            ForcaDoChute = s.ForcaDoChute,
+            ChuteLonge = s.ChuteLonge,
+            Voleio = s.Voleio,
+            Penalti = s.Penalti,
+            Visao = s.Visao,
+            Cruzamento = s.Cruzamento,
+            Lancamento = s.Lancamento,
+            PasseCurto = s.PasseCurto,
+            Curva = s.Curva,
+            Agilidade = s.Agilidade,
+            Equilibrio = s.Equilibrio,
+            PosAtaqueInutil = s.PosAtaqueInutil,
+            ControleBola = s.ControleBola,
+            Conducao = s.Conducao,
+            Interceptacaos = s.Interceptacaos,
+            NocaoDefensiva = s.NocaoDefensiva,
+            DivididaEmPe = s.DivididaEmPe,
+            Carrinho = s.Carrinho,
+            Impulsao = s.Impulsao,
+            Folego = s.Folego,
+            Forca = s.Forca,
+            Reacao = s.Reacao,
+            Combatividade = s.Combatividade,
+            Frieza = s.Frieza,
+            ElasticidadeGL = s.ElasticidadeGL,
+            ManejoGL = s.ManejoGL,
+            ChuteGL = s.ChuteGL,
+            ReflexosGL = s.ReflexosGL,
+            PosGL = s.PosGL
+        };
+
+    public static readonly Expression<Func<MatchPlayerEntity, MatchPlayerDto>> MatchPlayer =
+        p => new MatchPlayerDto
+        {
+            PlayerId = p.Player.PlayerId,
+            ClubId = p.ClubId,
+            Playername = p.Player.Playername,
+            Goals = p.Goals,
+            Assists = p.Assists,
+            Rating = p.Rating,
+            Cleansheetsany = p.Cleansheetsany,
+            Cleansheetsdef = p.Cleansheetsdef,
+            Cleansheetsgk = p.Cleansheetsgk,
+            Losses = p.Losses,
+            Mom = p.Mom,
+            Passattempts = p.Passattempts,
+            Passesmade = p.Passesmade,
+            Realtimegame = p.Realtimegame,
+            Realtimeidle = p.Realtimeidle,
+            Redcards = p.Redcards,
+            Saves = p.Saves,
+            Score = p.Score,
+            Shots = p.Shots,
+            Tackleattempts = p.Tackleattempts,
+            Tacklesmade = p.Tacklesmade,
+            Vproattr = p.Vproattr,
+            Vprohackreason = p.Vprohackreason,
+            Wins = p.Wins,
+            Pos = p.Pos,
+            Namespace = p.Namespace,
+            Stats = p.Player.PlayerMatchStats == null ? null : new PlayerMatchStatsDto
+            {
+                Aceleracao = p.Player.PlayerMatchStats.Aceleracao,
+                Pique = p.Player.PlayerMatchStats.Pique,
+                Finalizacao = p.Player.PlayerMatchStats.Finalizacao,
+                Falta = p.Player.PlayerMatchStats.Falta,
+                Cabeceio = p.Player.PlayerMatchStats.Cabeceio,
+                ForcaDoChute = p.Player.PlayerMatchStats.ForcaDoChute,
+                ChuteLonge = p.Player.PlayerMatchStats.ChuteLonge,
+                Voleio = p.Player.PlayerMatchStats.Voleio,
+                Penalti = p.Player.PlayerMatchStats.Penalti,
+                Visao = p.Player.PlayerMatchStats.Visao,
+                Cruzamento = p.Player.PlayerMatchStats.Cruzamento,
+                Lancamento = p.Player.PlayerMatchStats.Lancamento,
+                PasseCurto = p.Player.PlayerMatchStats.PasseCurto,
+                Curva = p.Player.PlayerMatchStats.Curva,
+                Agilidade = p.Player.PlayerMatchStats.Agilidade,
+                Equilibrio = p.Player.PlayerMatchStats.Equilibrio,
+                PosAtaqueInutil = p.Player.PlayerMatchStats.PosAtaqueInutil,
+                ControleBola = p.Player.PlayerMatchStats.ControleBola,
+                Conducao = p.Player.PlayerMatchStats.Conducao,
+                Interceptacaos = p.Player.PlayerMatchStats.Interceptacaos,
+                NocaoDefensiva = p.Player.PlayerMatchStats.NocaoDefensiva,
+                DivididaEmPe = p.Player.PlayerMatchStats.DivididaEmPe,
+                Carrinho = p.Player.PlayerMatchStats.Carrinho,
+                Impulsao = p.Player.PlayerMatchStats.Impulsao,
+                Folego = p.Player.PlayerMatchStats.Folego,
+                Forca = p.Player.PlayerMatchStats.Forca,
+                Reacao = p.Player.PlayerMatchStats.Reacao,
+                Combatividade = p.Player.PlayerMatchStats.Combatividade,
+                Frieza = p.Player.PlayerMatchStats.Frieza,
+                ElasticidadeGL = p.Player.PlayerMatchStats.ElasticidadeGL,
+                ManejoGL = p.Player.PlayerMatchStats.ManejoGL,
+                ChuteGL = p.Player.PlayerMatchStats.ChuteGL,
+                ReflexosGL = p.Player.PlayerMatchStats.ReflexosGL,
+                PosGL = p.Player.PlayerMatchStats.PosGL
+            }
+        };
+
+    public static readonly Expression<Func<MatchClubEntity, MatchClubDto>> MatchClub =
+        c => new MatchClubDto
+        {
+            ClubId = c.ClubId,
+            Date = c.Date,
+            GameNumber = c.GameNumber,
+            Goals = c.Goals,
+            GoalsAgainst = c.GoalsAgainst,
+            Losses = c.Losses,
+            MatchType = c.MatchType,
+            Result = c.Result,
+            Score = c.Score,
+            SeasonId = c.SeasonId,
+            Team = c.Team,
+            Ties = c.Ties,
+            Wins = c.Wins,
+            WinnerByDnf = c.WinnerByDnf,
+            Details = c.Details == null ? null : new ClubDetailsDto
+            {
+                Name = c.Details.Name,
+                RegionId = c.Details.RegionId,
+                TeamId = c.Details.TeamId,
+                StadName = c.Details.StadName,
+                KitId = c.Details.KitId,
+                CustomKitId = c.Details.CustomKitId,
+                CustomAwayKitId = c.Details.CustomAwayKitId,
+                CustomThirdKitId = c.Details.CustomThirdKitId,
+                CustomKeeperKitId = c.Details.CustomKeeperKitId,
+                KitColor1 = c.Details.KitColor1,
+                KitColor2 = c.Details.KitColor2,
+                KitColor3 = c.Details.KitColor3,
+                KitColor4 = c.Details.KitColor4,
+                KitAColor1 = c.Details.KitAColor1,
+                KitAColor2 = c.Details.KitAColor2,
+                KitAColor3 = c.Details.KitAColor3,
+                KitAColor4 = c.Details.KitAColor4,
+                KitThrdColor1 = c.Details.KitThrdColor1,
+                KitThrdColor2 = c.Details.KitThrdColor2,
+                KitThrdColor3 = c.Details.KitThrdColor3,
+                KitThrdColor4 = c.Details.KitThrdColor4,
+                DCustomKit = c.Details.DCustomKit,
+                CrestColor = c.Details.CrestColor,
+                CrestAssetId = c.Details.CrestAssetId,
+                SelectedKitType = c.Details.SelectedKitType,
+                ClubId = c.Details.ClubId
+            }
+        };
+
+    public static readonly Expression<Func<MatchEntity, MatchDto>> Match =
+        m => new MatchDto
+        {
+            MatchId = m.MatchId,
+            Timestamp = m.Timestamp,
+            MatchType = m.MatchType,
+            Clubs = m.Clubs.AsQueryable().Select(MatchClub).ToList(),
+            Players = m.MatchPlayers.AsQueryable().Select(MatchPlayer).ToList()
+        };
+
+    public static readonly Expression<Func<MatchPlayerEntity, MatchPlayerStatsDto>> MatchPlayerStatsRow =
+        mp => new MatchPlayerStatsDto
+        {
+            PlayerId = mp.PlayerEntityId,
+            PlayerName = mp.Player != null ? mp.Player.Playername : "Desconhecido",
+            Assists = mp.Assists,
+            CleansheetsAny = mp.Cleansheetsany,
+            CleansheetsDef = mp.Cleansheetsdef,
+            CleansheetsGk = mp.Cleansheetsgk,
+            Goals = mp.Goals,
+            GoalsConceded = mp.Goalsconceded,
+            Losses = mp.Losses,
+            Mom = mp.Mom,
+            Namespace = mp.Namespace,
+            PassAttempts = mp.Passattempts,
+            PassesMade = mp.Passesmade,
+            PassAccuracy = mp.Passattempts > 0 ? (double)mp.Passesmade / mp.Passattempts * 100.0 : 0.0,
+            Position = mp.Pos,
+            Rating = mp.Rating,
+            RealtimeGame = mp.Realtimegame,
+            RealtimeIdle = mp.Realtimeidle,
+            RedCards = mp.Redcards,
+            Saves = mp.Saves,
+            Score = mp.Score,
+            Shots = mp.Shots,
+            TackleAttempts = mp.Tackleattempts,
+            TacklesMade = mp.Tacklesmade,
+            VproAttr = mp.Vproattr,
+            VproHackReason = mp.Vprohackreason,
+            Wins = mp.Wins,
+            Statistics = mp.Player != null && mp.Player.PlayerMatchStats != null
+                ? new PlayerMatchStatsDto
+                {
+                    Aceleracao = mp.Player.PlayerMatchStats.Aceleracao,
+                    Pique = mp.Player.PlayerMatchStats.Pique,
+                    Finalizacao = mp.Player.PlayerMatchStats.Finalizacao,
+                    Falta = mp.Player.PlayerMatchStats.Falta,
+                    Cabeceio = mp.Player.PlayerMatchStats.Cabeceio,
+                    ForcaDoChute = mp.Player.PlayerMatchStats.ForcaDoChute,
+                    ChuteLonge = mp.Player.PlayerMatchStats.ChuteLonge,
+                    Voleio = mp.Player.PlayerMatchStats.Voleio,
+                    Penalti = mp.Player.PlayerMatchStats.Penalti,
+                    Visao = mp.Player.PlayerMatchStats.Visao,
+                    Cruzamento = mp.Player.PlayerMatchStats.Cruzamento,
+                    Lancamento = mp.Player.PlayerMatchStats.Lancamento,
+                    PasseCurto = mp.Player.PlayerMatchStats.PasseCurto,
+                    Curva = mp.Player.PlayerMatchStats.Curva,
+                    Agilidade = mp.Player.PlayerMatchStats.Agilidade,
+                    Equilibrio = mp.Player.PlayerMatchStats.Equilibrio,
+                    PosAtaqueInutil = mp.Player.PlayerMatchStats.PosAtaqueInutil,
+                    ControleBola = mp.Player.PlayerMatchStats.ControleBola,
+                    Conducao = mp.Player.PlayerMatchStats.Conducao,
+                    Interceptacaos = mp.Player.PlayerMatchStats.Interceptacaos,
+                    NocaoDefensiva = mp.Player.PlayerMatchStats.NocaoDefensiva,
+                    DivididaEmPe = mp.Player.PlayerMatchStats.DivididaEmPe,
+                    Carrinho = mp.Player.PlayerMatchStats.Carrinho,
+                    Impulsao = mp.Player.PlayerMatchStats.Impulsao,
+                    Folego = mp.Player.PlayerMatchStats.Folego,
+                    Forca = mp.Player.PlayerMatchStats.Forca,
+                    Reacao = mp.Player.PlayerMatchStats.Reacao,
+                    Combatividade = mp.Player.PlayerMatchStats.Combatividade,
+                    Frieza = mp.Player.PlayerMatchStats.Frieza,
+                    ElasticidadeGL = mp.Player.PlayerMatchStats.ElasticidadeGL,
+                    ManejoGL = mp.Player.PlayerMatchStats.ManejoGL,
+                    ChuteGL = mp.Player.PlayerMatchStats.ChuteGL,
+                    ReflexosGL = mp.Player.PlayerMatchStats.ReflexosGL,
+                    PosGL = mp.Player.PlayerMatchStats.PosGL
+                }
+                : null
+        };
+}

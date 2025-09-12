@@ -9,10 +9,10 @@ public class EAFCContext : DbContext
     public DbSet<MatchPlayerEntity> MatchPlayers { get; set; }
     public DbSet<PlayerEntity> Players { get; set; }
     public DbSet<PlayerMatchStatsEntity> PlayerMatchStats { get; set; }
+    public DbSet<OverallStatsEntity> OverallStats { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // ===== Match =====
         modelBuilder.Entity<MatchEntity>()
             .HasKey(m => m.MatchId);
 
@@ -28,13 +28,12 @@ public class EAFCContext : DbContext
             .HasForeignKey(mp => mp.MatchId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        // MatchClub + ClubDetails
         modelBuilder.Entity<MatchClubEntity>()
-            .HasKey(mc => mc.Id); // PK simples por Id
+            .HasKey(mc => mc.Id);
 
         modelBuilder.Entity<MatchClubEntity>()
             .HasIndex(mc => new { mc.MatchId, mc.ClubId })
-            .IsUnique(); // evita duplicar o par p/ mesma partida
+            .IsUnique();
 
         modelBuilder.Entity<MatchClubEntity>()
             .OwnsOne(mc => mc.Details, cb =>
@@ -43,10 +42,9 @@ public class EAFCContext : DbContext
             });
 
         modelBuilder.Entity<MatchClubEntity>()
-    .Property(mc => mc.Id)
-    .ValueGeneratedOnAdd();
+            .Property(mc => mc.Id)
+            .ValueGeneratedOnAdd();
 
-        // ===== Player =====
         modelBuilder.Entity<PlayerEntity>()
             .HasKey(p => p.Id);
 
@@ -54,29 +52,25 @@ public class EAFCContext : DbContext
             .HasIndex(p => new { p.PlayerId, p.ClubId })
             .IsUnique();
 
-        // Ponteiro opcional do Player para "stats atual" (NÃO cascade)
         modelBuilder.Entity<PlayerEntity>()
-            .HasOne(p => p.PlayerMatchStats)   // navigation existente nas suas classes
+            .HasOne(p => p.PlayerMatchStats)
             .WithMany()
             .HasForeignKey(p => p.PlayerMatchStatsId)
-            .OnDelete(DeleteBehavior.Restrict); // ou .NoAction()
+            .OnDelete(DeleteBehavior.Restrict);
 
-        // ===== PlayerMatchStats (histórico 1:N) =====
         modelBuilder.Entity<PlayerMatchStatsEntity>()
             .HasKey(s => s.Id);
 
         modelBuilder.Entity<PlayerMatchStatsEntity>()
             .HasOne(s => s.Player)
-            .WithMany() // sem coleção reversa nas suas classes; tudo bem
+            .WithMany()
             .HasForeignKey(s => s.PlayerEntityId)
-            .OnDelete(DeleteBehavior.Restrict); // mantém snapshots antigos
+            .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<PlayerMatchStatsEntity>()
             .HasIndex(s => s.PlayerEntityId)
             .IsUnique(false);
 
-        // ===== MatchPlayer =====
-        // Inclui ClubId na PK para evitar colisões (mesmo player em contexto diferente)
         modelBuilder.Entity<MatchPlayerEntity>()
             .HasKey(mp => new { mp.MatchId, mp.ClubId, mp.PlayerEntityId });
 
@@ -90,7 +84,17 @@ public class EAFCContext : DbContext
             .HasOne(mp => mp.PlayerMatchStats)
             .WithMany(s => s.MatchPlayers)
             .HasForeignKey(mp => mp.PlayerMatchStatsEntityId)
-            .OnDelete(DeleteBehavior.Restrict); // CHAVE: histórico não some
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<OverallStatsEntity>()
+            .HasKey(o => o.Id);
+
+        modelBuilder.Entity<OverallStatsEntity>()
+            .HasIndex(o => o.ClubId)
+            .IsUnique();
+
+        modelBuilder.Entity<OverallStatsEntity>()
+            .Property(o => o.Id)
+            .ValueGeneratedOnAdd();
     }
 }
-    
