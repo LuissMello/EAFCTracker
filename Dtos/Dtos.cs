@@ -139,6 +139,7 @@ public class PlayerStatisticsDto
 
     public int MatchesPlayed { get; set; }
     public int TotalGoals { get; set; }
+    public int TotalGoalsConceded { get; set; }
     public int TotalAssists { get; set; }
     public int TotalShots { get; set; }
     public int TotalPassesMade { get; set; }
@@ -169,6 +170,7 @@ public class ClubStatisticsDto
 
     public int MatchesPlayed { get; set; }
     public int TotalGoals { get; set; }
+    public int TotalGoalsConceded { get; set; }
     public int TotalAssists { get; set; }
     public int TotalShots { get; set; }
     public int TotalPassesMade { get; set; }
