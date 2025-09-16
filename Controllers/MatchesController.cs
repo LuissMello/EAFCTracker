@@ -46,9 +46,14 @@ public class MatchesController : ControllerBase
 
         var overall = StatsAggregator.BuildOverallForSingleMatch(match.MatchPlayers);
         var playersStats = StatsAggregator.BuildPerPlayer(match.MatchPlayers);
-        var clubsStats = StatsAggregator.BuildPerClub(match.MatchPlayers, match.Clubs.ToDictionary(c => c.ClubId));
+        var clubsStats = StatsAggregator.BuildPerClub(
+            match.MatchPlayers,
+            match.Clubs.ToDictionary(c => c.ClubId)
+        );
 
         var clubIds = match.Clubs.Select(c => c.ClubId).Distinct().ToList();
+
+        // Overall por clube (já existia)
         var overallEntities = await _db.OverallStats
             .AsNoTracking()
             .Where(o => clubIds.Contains(o.ClubId))
@@ -56,14 +61,25 @@ public class MatchesController : ControllerBase
 
         var clubsOverall = StatsAggregator.BuildClubsOverall(overallEntities);
 
+        // >>> NOVO: PlayoffAchievements por clube <<<
+        var playoffEntities = await _db.PlayoffAchievements
+            .AsNoTracking()
+            .Where(p => clubIds.Contains(p.ClubId))
+            .ToListAsync(ct);
+
+        var clubsPlayoffAchievements = StatsAggregator.BuildClubsPlayoffAchievements(playoffEntities);
+
         return Ok(new
         {
             Overall = overall,
             Players = playersStats,
             Clubs = clubsStats,
-            ClubsOverall = clubsOverall
+            ClubsOverall = clubsOverall,
+            // >>> NOVO bloco no payload <<<
+            ClubsPlayoffAchievements = clubsPlayoffAchievements
         });
     }
+
 
     [HttpGet("{matchId:long}/players/{playerId:long}/statistics")]
     public async Task<ActionResult<MatchPlayerStatsDto>> GetPlayerStatisticsByMatchAndPlayer(long matchId, long playerId, CancellationToken ct)

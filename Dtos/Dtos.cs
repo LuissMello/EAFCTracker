@@ -439,3 +439,19 @@ public sealed class ClubOverallStatsDto
     public string? LeagueAppearances { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
 }
+
+public class PlayoffAchievementDto
+{
+    public string SeasonId { get; set; } = "";
+    public string? SeasonName { get; set; }
+    public string? BestDivision { get; set; }
+    public string? BestFinishGroup { get; set; }
+    public DateTime RetrievedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
+}
+
+public class ClubPlayoffAchievementDto
+{
+    public long ClubId { get; set; }
+    public List<PlayoffAchievementDto> Achievements { get; set; } = new();
+}

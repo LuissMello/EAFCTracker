@@ -338,5 +338,37 @@ namespace EAFCMatchTracker.Dtos
             .OrderBy(x => x.ClubId)
             .ToList();
         }
+
+        private static int TryParseSeasonAsNumber(string? seasonId)
+        {
+            if (string.IsNullOrWhiteSpace(seasonId)) return int.MinValue;
+            return int.TryParse(seasonId, out var n) ? n : int.MinValue;
+        }
+
+        public static List<ClubPlayoffAchievementDto> BuildClubsPlayoffAchievements(
+            IEnumerable<PlayoffAchievementEntity> entities)
+        {
+            return entities
+                .GroupBy(e => e.ClubId)
+                .Select(g => new ClubPlayoffAchievementDto
+                {
+                    ClubId = g.Key,
+                    Achievements = g
+                        .OrderByDescending(e => TryParseSeasonAsNumber(e.SeasonId))
+                        .ThenByDescending(e => e.UpdatedAtUtc)
+                        .Select(e => new PlayoffAchievementDto
+                        {
+                            SeasonId = e.SeasonId,
+                            SeasonName = e.SeasonName,
+                            BestDivision = e.BestDivision,
+                            BestFinishGroup = e.BestFinishGroup,
+                            RetrievedAtUtc = e.RetrievedAtUtc,
+                            UpdatedAtUtc = e.UpdatedAtUtc
+                        })
+                        .ToList()
+                })
+                .OrderBy(x => x.ClubId)
+                .ToList();
+        }
     }
 }

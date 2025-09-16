@@ -10,6 +10,7 @@ public class EAFCContext : DbContext
     public DbSet<PlayerEntity> Players { get; set; }
     public DbSet<PlayerMatchStatsEntity> PlayerMatchStats { get; set; }
     public DbSet<OverallStatsEntity> OverallStats { get; set; }
+    public DbSet<PlayoffAchievementEntity> PlayoffAchievements { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -96,5 +97,19 @@ public class EAFCContext : DbContext
         modelBuilder.Entity<OverallStatsEntity>()
             .Property(o => o.Id)
             .ValueGeneratedOnAdd();
+
+        modelBuilder.Entity<PlayoffAchievementEntity>()
+            .HasKey(p => p.Id);
+
+        modelBuilder.Entity<PlayoffAchievementEntity>()
+            .Property(p => p.Id)
+            .ValueGeneratedOnAdd();
+
+        modelBuilder.Entity<PlayoffAchievementEntity>()
+            .HasIndex(p => new { p.ClubId, p.SeasonId })
+            .IsUnique();
+
+        modelBuilder.Entity<PlayoffAchievementEntity>()
+            .HasIndex(p => p.ClubId);
     }
 }

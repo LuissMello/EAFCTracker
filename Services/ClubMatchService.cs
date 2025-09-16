@@ -315,54 +315,94 @@ public class ClubMatchService : IClubMatchService
     {
         try
         {
-            var baseUrl = _config["EAFCSettings:BaseUrl"];
-            var endpointTpl = _config["EAFCSettings:OverallStatsEndpoint"]
-                              ?? _config["OverallStatsEndpoint"]
-                              ?? "/clubs/overallStats?platform=common-gen5&clubIds={0}";
+            var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
+            var overallTpl = _config["EAFCSettings:OverallStatsEndpoint"]
+                             ?? _config["OverallStatsEndpoint"]
+                             ?? "/clubs/overallStats?platform=common-gen5&clubIds={0}";
 
-            var uri = new Uri($"{baseUrl.TrimEnd('/')}/{string.Format(endpointTpl, clubId).TrimStart('/')}");
+            var playoffsTpl = _config["EAFCSettings:PlayoffAchievementsEndpoint"]
+                              ?? _config["PlayoffAchievementsEndpoint"]
+                              ?? "/club/playoffAchievements?platform=common-gen5&clubId={0}";
+
+            var overallUri = new Uri($"{baseUrl.TrimEnd('/')}/{string.Format(overallTpl, clubId).TrimStart('/')}");
+            var playoffsUri = new Uri($"{baseUrl.TrimEnd('/')}/{string.Format(playoffsTpl, clubId).TrimStart('/')}");
 
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PostmanRuntime/7.36.0");
             _httpClient.DefaultRequestHeaders.Connection.ParseAdd("keep-alive");
 
-            using var resp = await _httpClient.GetAsync(uri, ct);
-            if (!resp.IsSuccessStatusCode) return;
+            // Buscar em paralelo
+            var overallTask = _httpClient.GetAsync(overallUri, ct);
+            var playoffsTask = _httpClient.GetAsync(playoffsUri, ct);
 
-            var json = await resp.Content.ReadAsStringAsync(ct);
-            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            await Task.WhenAll(overallTask, playoffsTask);
 
-            List<OverallStats>? list = null;
-            try
+            using var overallResp = overallTask.Result;
+            using var playoffsResp = playoffsTask.Result;
+
+            // ---- OVERALL (comportamento original) ----
+            if (overallResp.IsSuccessStatusCode)
             {
-                list = JsonSerializer.Deserialize<List<OverallStats>>(json, options);
+                var jsonOverall = await overallResp.Content.ReadAsStringAsync(ct);
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                List<OverallStats>? list = null;
+                try
+                {
+                    list = JsonSerializer.Deserialize<List<OverallStats>>(jsonOverall, options);
+                }
+                catch
+                {
+                    var one = JsonSerializer.Deserialize<OverallStats>(jsonOverall, options);
+                    if (one != null) list = new List<OverallStats> { one };
+                }
+
+                if (list != null && list.Count > 0)
+                {
+                    var src = list[0];
+                    var existing = await _db.OverallStats.FirstOrDefaultAsync(x => x.ClubId == clubId, ct);
+
+                    if (existing == null)
+                    {
+                        var entity = MapToEntity(clubId, src);
+                        await _db.OverallStats.AddAsync(entity, ct);
+                    }
+                    else
+                    {
+                        MapToEntity(clubId, src, existing);
+                        _db.OverallStats.Update(existing);
+                    }
+
+                    await _db.SaveChangesAsync(ct);
+                }
             }
-            catch
+
+            // ---- PLAYOFF ACHIEVEMENTS (nova tabela 1:N) ----
+            if (playoffsResp.IsSuccessStatusCode)
             {
-                var one = JsonSerializer.Deserialize<OverallStats>(json, options);
-                if (one != null) list = new List<OverallStats> { one };
+                var jsonPlayoffs = await playoffsResp.Content.ReadAsStringAsync(ct);
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                // Pode vir lista ou item único
+                List<PlayoffAchievement>? items = null;
+                try
+                {
+                    items = JsonSerializer.Deserialize<List<PlayoffAchievement>>(jsonPlayoffs, options);
+                }
+                catch
+                {
+                    var one = JsonSerializer.Deserialize<PlayoffAchievement>(jsonPlayoffs, options);
+                    if (one != null) items = new List<PlayoffAchievement> { one };
+                }
+
+                if (items != null && items.Count > 0)
+                {
+                    await UpsertPlayoffAchievementsAsync(clubId, items, ct);
+                }
             }
-
-            if (list == null || list.Count == 0) return;
-
-            var src = list[0];
-            var existing = await _db.OverallStats.FirstOrDefaultAsync(x => x.ClubId == clubId, ct);
-
-            if (existing == null)
-            {
-                var entity = MapToEntity(clubId, src);
-                await _db.OverallStats.AddAsync(entity, ct);
-            }
-            else
-            {
-                MapToEntity(clubId, src, existing);
-                _db.OverallStats.Update(existing);
-            }
-
-            await _db.SaveChangesAsync(ct);
         }
         catch
         {
-            // Silencioso por robustez: falha no overall não deve interromper o ingest de partidas
+            // Silencioso por robustez
         }
     }
 
@@ -387,5 +427,57 @@ public class ClubMatchService : IClubMatchService
         o.LeagueAppearances = src.LeagueAppearances;
         o.UpdatedAtUtc = DateTime.UtcNow;
         return o;
+    }
+    private static int TryParseSeasonAsNumber(string? seasonId)
+    {
+        if (string.IsNullOrWhiteSpace(seasonId)) return int.MinValue;
+        return int.TryParse(seasonId, out var n) ? n : int.MinValue;
+    }
+
+    private async Task UpsertPlayoffAchievementsAsync(long clubId, IEnumerable<PlayoffAchievement> items, CancellationToken ct)
+    {
+        // Carrega existentes do clube e indexa por SeasonId (case-insensitive)
+        var existing = await _db.PlayoffAchievements
+                                .Where(p => p.ClubId == clubId)
+                                .ToListAsync(ct);
+
+        var map = existing.ToDictionary(p => p.SeasonId, StringComparer.OrdinalIgnoreCase);
+
+        var utcNow = DateTime.UtcNow;
+
+        foreach (var it in items)
+        {
+            if (string.IsNullOrWhiteSpace(it.SeasonId))
+                continue; // precisa de SeasonId para unicidade
+
+            if (map.TryGetValue(it.SeasonId, out var row))
+            {
+                // UPDATE
+                row.SeasonName = it.SeasonName;
+                row.BestDivision = it.BestDivision;
+                row.BestFinishGroup = it.BestFinishGroup;
+                row.UpdatedAtUtc = utcNow;
+
+                _db.PlayoffAchievements.Update(row);
+            }
+            else
+            {
+                // INSERT
+                var entity = new PlayoffAchievementEntity
+                {
+                    ClubId = clubId,
+                    SeasonId = it.SeasonId,
+                    SeasonName = it.SeasonName,
+                    BestDivision = it.BestDivision,
+                    BestFinishGroup = it.BestFinishGroup,
+                    RetrievedAtUtc = utcNow,
+                    UpdatedAtUtc = utcNow
+                };
+
+                await _db.PlayoffAchievements.AddAsync(entity, ct);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
     }
 }
