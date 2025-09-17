@@ -20,9 +20,35 @@ public class ClubMatchService : IClubMatchService
 
     public async Task FetchAndStoreMatchesAsync(string clubId, string matchType, CancellationToken ct)
     {
-        List<Match> matches = await FetchMatches(clubId, matchType);
+        var matches = await FetchMatches(clubId, matchType);
+        if (matches.Count == 0) return;
 
-        foreach (Match match in matches)
+        var idMap = matches
+            .Select(m => new { Match = m, Ok = long.TryParse(m.MatchId, out var id), Id = long.TryParse(m.MatchId, out var id2) ? id2 : 0 })
+            .Where(x => x.Ok)
+            .GroupBy(x => x.Id)
+            .ToDictionary(g => g.Key, g => g.First().Match);  
+
+        if (idMap.Count == 0) return;
+
+        var allIds = idMap.Keys.ToList();
+
+        var existingIds = await _db.Matches
+            .AsNoTracking()
+            .Where(m => allIds.Contains(m.MatchId))
+            .Select(m => m.MatchId)
+            .ToListAsync(ct);
+
+        var existing = existingIds.Count > 0 ? existingIds.ToHashSet() : new HashSet<long>();
+
+        var newMatches = allIds
+            .Where(id => !existing.Contains(id))
+            .Select(id => idMap[id])
+            .ToList();
+
+        if (newMatches.Count == 0) return;
+
+        foreach (var match in newMatches)
         {
             await SaveMatchAsync(match, matchType, ct);
         }
@@ -56,9 +82,6 @@ public class ClubMatchService : IClubMatchService
             throw new ArgumentException("Match inválido.");
 
         long matchId = Convert.ToInt64(match.MatchId);
-
-        if (await _db.Matches.AnyAsync(m => m.MatchId == matchId, ct))
-            return;
 
         var strategy = _db.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
