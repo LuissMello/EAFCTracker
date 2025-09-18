@@ -78,6 +78,7 @@ public static class DtoProjections
         p => new MatchPlayerDto
         {
             PlayerId = p.Player.PlayerId,
+            Id = p.PlayerEntityId,
             ClubId = p.ClubId,
             Playername = p.Player.Playername,
             Goals = p.Goals,

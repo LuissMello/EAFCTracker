@@ -31,7 +31,6 @@ public class ClubMatchBackgroundService : BackgroundService
         {
             try
             {
-                // Re-le o config a cada ciclo (permite hot-reload se você habilitar reloadOnChange).
                 var intervalMinutes = int.TryParse(_config[IntervalPath], out var m) ? m : 5;
 
                 var rawIds = _config[ClubsPath] ?? string.Empty;
@@ -49,7 +48,6 @@ public class ClubMatchBackgroundService : BackgroundService
                     using var scope = _services.CreateScope();
                     var matchService = scope.ServiceProvider.GetRequiredService<ClubMatchService>();
 
-                    // Sequencial (mais seguro contra rate limit da EA). Troque para paralelizar, se quiser (exemplo mais abaixo).
                     foreach (var clubId in clubIds)
                     {
                         try

@@ -53,6 +53,122 @@ public class ClubsController : ControllerBase
         return Ok(clubs);
     }
 
+    [HttpGet("{clubId:long}/players/attributes")]
+    public async Task<ActionResult<List<PlayerAttributeSnapshotDto>>> GetClubPlayersAttributes(
+    long clubId,
+    [FromQuery] int count = 10,
+    CancellationToken ct = default)
+    {
+        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+        if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
+
+        // Últimas N partidas do clube (com jogadores e stats carregados)
+        var matches = await _db.Matches
+            .AsNoTracking()
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
+            .Include(m => m.MatchPlayers.Where(mp => mp.ClubId == clubId))
+                .ThenInclude(mp => mp.Player)
+            .Include(m => m.MatchPlayers.Where(mp => mp.ClubId == clubId))
+                .ThenInclude(mp => mp.PlayerMatchStats)
+            .OrderByDescending(m => m.Timestamp)
+            .Take(count)
+            .ToListAsync(ct);
+
+        if (matches.Count == 0) return Ok(new List<PlayerAttributeSnapshotDto>());
+
+        // Para cada jogador do clube, pegamos a ocorrência MAIS NOVA (pela timestamp do match)
+        var byPlayer = matches
+            .SelectMany(m => m.MatchPlayers.Select(mp => new
+            {
+                m.MatchId,
+                m.Timestamp,
+                mp.PlayerEntityId,
+                mp.Player,
+                mp.PlayerMatchStats
+            }))
+            .Where(x => x.Player != null) // sanity
+            .GroupBy(x => x.PlayerEntityId)
+            .Select(g =>
+            {
+                var latest = g.OrderByDescending(x => x.Timestamp).First();
+                return new PlayerAttributeSnapshotDto
+                {
+                    PlayerId = latest.Player!.PlayerId,
+                    PlayerName = latest.Player!.Playername ?? $"Player {latest.Player!.PlayerId}",
+                    ClubId = latest.Player!.ClubId,
+                    Statistics = latest.PlayerMatchStats is null
+                        ? null
+                        : new PlayerMatchStatsDto
+                        {
+                            Aceleracao = latest.PlayerMatchStats.Aceleracao,
+                            Pique = latest.PlayerMatchStats.Pique,
+                            Finalizacao = latest.PlayerMatchStats.Finalizacao,
+                            Falta = latest.PlayerMatchStats.Falta,
+                            Cabeceio = latest.PlayerMatchStats.Cabeceio,
+                            ForcaDoChute = latest.PlayerMatchStats.ForcaDoChute,
+                            ChuteLonge = latest.PlayerMatchStats.ChuteLonge,
+                            Voleio = latest.PlayerMatchStats.Voleio,
+                            Penalti = latest.PlayerMatchStats.Penalti,
+                            Visao = latest.PlayerMatchStats.Visao,
+                            Cruzamento = latest.PlayerMatchStats.Cruzamento,
+                            Lancamento = latest.PlayerMatchStats.Lancamento,
+                            PasseCurto = latest.PlayerMatchStats.PasseCurto,
+                            Curva = latest.PlayerMatchStats.Curva,
+                            Agilidade = latest.PlayerMatchStats.Agilidade,
+                            Equilibrio = latest.PlayerMatchStats.Equilibrio,
+                            PosAtaqueInutil = latest.PlayerMatchStats.PosAtaqueInutil,
+                            ControleBola = latest.PlayerMatchStats.ControleBola,
+                            Conducao = latest.PlayerMatchStats.Conducao,
+                            Interceptacaos = latest.PlayerMatchStats.Interceptacaos,
+                            NocaoDefensiva = latest.PlayerMatchStats.NocaoDefensiva,
+                            DivididaEmPe = latest.PlayerMatchStats.DivididaEmPe,
+                            Carrinho = latest.PlayerMatchStats.Carrinho,
+                            Impulsao = latest.PlayerMatchStats.Impulsao,
+                            Folego = latest.PlayerMatchStats.Folego,
+                            Forca = latest.PlayerMatchStats.Forca,
+                            Reacao = latest.PlayerMatchStats.Reacao,
+                            Combatividade = latest.PlayerMatchStats.Combatividade,
+                            Frieza = latest.PlayerMatchStats.Frieza,
+                            ElasticidadeGL = latest.PlayerMatchStats.ElasticidadeGL,
+                            ManejoGL = latest.PlayerMatchStats.ManejoGL,
+                            ChuteGL = latest.PlayerMatchStats.ChuteGL,
+                            ReflexosGL = latest.PlayerMatchStats.ReflexosGL,
+                            PosGL = latest.PlayerMatchStats.PosGL
+                        }
+                };
+            })
+            .OrderBy(p => p.PlayerName)
+            .ToList();
+
+        return Ok(byPlayer);
+    }
+
+    [HttpGet("{clubId:long}/players/aggregate")]
+    public async Task<ActionResult<List<PlayerStatisticsDto>>> GetClubPlayersAggregate(
+    long clubId,
+    [FromQuery] int count = 10,
+    [FromQuery] int? opponentCount = null,
+    CancellationToken ct = default)
+    {
+        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+        if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
+
+        // Reutiliza sua própria lógica já existente:
+        var query = BaseClubMatchesQuery(clubId);
+        query = ApplyOpponentFilter(query, clubId, opponentCount);
+
+        var matches = await query
+            .OrderByDescending(m => m.Timestamp)
+            .Take(count)
+            .ToListAsync(ct);
+
+        if (matches.Count == 0)
+            return Ok(new List<PlayerStatisticsDto>());
+
+        var (_, players, _) = StatsAggregator.BuildLimitedForClub(clubId, matches);
+        return Ok(players);
+    }
+
     [HttpGet("{clubId:long}/matches/statistics")]
     public async Task<ActionResult<FullMatchStatisticsDto>> GetMatchStatistics(long clubId, CancellationToken ct)
     {

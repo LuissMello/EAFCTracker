@@ -78,6 +78,7 @@ public static class DtoProjections
         p => new MatchPlayerDto
         {
             PlayerId = p.Player.PlayerId,
+            Id = p.PlayerEntityId,
             ClubId = p.ClubId,
             Playername = p.Player.Playername,
             Goals = p.Goals,
@@ -203,7 +204,7 @@ public static class DtoProjections
     public static readonly Expression<Func<MatchPlayerEntity, MatchPlayerStatsDto>> MatchPlayerStatsRow =
         mp => new MatchPlayerStatsDto
         {
-            PlayerId = mp.PlayerEntityId,
+            PlayerId = mp.Player.PlayerId,
             PlayerName = mp.Player != null ? mp.Player.Playername : "Desconhecido",
             Assists = mp.Assists,
             CleansheetsAny = mp.Cleansheetsany,

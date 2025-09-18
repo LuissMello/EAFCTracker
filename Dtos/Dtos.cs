@@ -29,7 +29,9 @@ public class MatchClubDto
  
 public class MatchPlayerDto
 {
+
     public long PlayerId { get; set; }
+    public long Id { get; set; }
     public long ClubId { get; set; }
     public string Playername { get; set; }
     public string Pos { get; set; }
@@ -454,4 +456,12 @@ public class ClubPlayoffAchievementDto
 {
     public long ClubId { get; set; }
     public List<PlayoffAchievementDto> Achievements { get; set; } = new();
+}
+
+public sealed class PlayerAttributeSnapshotDto
+{
+    public long PlayerId { get; set; }
+    public string PlayerName { get; set; } = "";
+    public long ClubId { get; set; }
+    public PlayerMatchStatsDto? Statistics { get; set; }
 }
