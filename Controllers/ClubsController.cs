@@ -84,7 +84,8 @@ public class ClubsController : ControllerBase
                 m.Timestamp,
                 mp.PlayerEntityId,
                 mp.Player,
-                mp.PlayerMatchStats
+                mp.PlayerMatchStats,
+                mp.Pos
             }))
             .Where(x => x.Player != null) // sanity
             .GroupBy(x => x.PlayerEntityId)
@@ -93,6 +94,7 @@ public class ClubsController : ControllerBase
                 var latest = g.OrderByDescending(x => x.Timestamp).First();
                 return new PlayerAttributeSnapshotDto
                 {
+                    Pos = latest.Pos,
                     PlayerId = latest.Player!.PlayerId,
                     PlayerName = latest.Player!.Playername ?? $"Player {latest.Player!.PlayerId}",
                     ClubId = latest.Player!.ClubId,
