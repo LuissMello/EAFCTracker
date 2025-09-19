@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
 
 public enum MatchType
 {
@@ -108,6 +109,25 @@ public class MatchPlayerEntity
     public string Vproattr { get; set; }
     public string Vprohackreason { get; set; }
     public short Wins { get; set; }
+
+    public short Archetypeid { get; set; }
+    public short BallDiveSaves { get; set; }
+    public short CrossSaves { get; set; }
+    public short GameTime { get; set; }
+    public short GoodDirectionSaves { get; set; }
+
+    public string MatchEventAggregate0 { get; set; }
+
+    public string MatchEventAggregate1 { get; set; }
+
+    public string MatchEventAggregate2 { get; set; }
+
+    public string MatchEventAggregate3 { get; set; }
+    public short ParrySaves { get; set; }
+    public short PunchSaves { get; set; }
+    public short ReflexSaves { get; set; }
+    public short SecondsPlayed { get; set; }
+    public short UserResult { get; set; }
 
     // Chave estrangeira para PlayerMatchStatsEntity
     public long PlayerMatchStatsEntityId { get; set; }  // Garante a correspondência com PlayerMatchStats.Id

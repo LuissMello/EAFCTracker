@@ -93,6 +93,29 @@ public class Player
     public string Vprohackreason { get; set; }
     public string Wins { get; set; }
     public string Playername { get; set; }
+
+    public string Archetypeid { get; set; }
+    public string BallDiveSaves { get; set; }
+    public string CrossSaves { get; set; }
+    public string GameTime { get; set; }
+    public string GoodDirectionSaves { get; set; }
+
+    [JsonPropertyName("match_event_aggregate_0")]
+    public string MatchEventAggregate0 { get; set; }
+    [JsonPropertyName("match_event_aggregate_1")]
+
+    public string MatchEventAggregate1 { get; set; }
+    [JsonPropertyName("match_event_aggregate_2")]
+
+    public string MatchEventAggregate2 { get; set; }
+    [JsonPropertyName("match_event_aggregate_3")]
+
+    public string MatchEventAggregate3 { get; set; }
+    public string ParrySaves { get; set; }
+    public string PunchSaves { get; set; }
+    public string ReflexSaves { get; set; }
+    public string SecondsPlayed { get; set; }
+    public string UserResult { get; set; }
 }
 
 public class AggregateStats

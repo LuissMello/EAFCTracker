@@ -281,7 +281,21 @@ public class ClubMatchService : IClubMatchService
                             Tacklesmade = SafeShort(data.Tacklesmade),
                             Vproattr = data.Vproattr ?? "",
                             Vprohackreason = data.Vprohackreason ?? "",
-                            Wins = SafeShort(data.Wins)
+                            Wins = SafeShort(data.Wins),
+                            Archetypeid = SafeShort(data.Archetypeid),
+                            BallDiveSaves = SafeShort(data.BallDiveSaves),
+                            CrossSaves = SafeShort(data.CrossSaves),
+                            GameTime = SafeShort(data.GameTime),
+                            GoodDirectionSaves = SafeShort(data.GoodDirectionSaves),
+                            MatchEventAggregate0 = data.MatchEventAggregate0,
+                            MatchEventAggregate1 = data.MatchEventAggregate1,
+                            MatchEventAggregate2 = data.MatchEventAggregate2,
+                            MatchEventAggregate3 = data.MatchEventAggregate3,
+                            ParrySaves = SafeShort(data.ParrySaves),
+                            PunchSaves = SafeShort(data.PunchSaves),
+                            ReflexSaves = SafeShort(data.ReflexSaves),
+                            SecondsPlayed = SafeShort(data.SecondsPlayed),
+                            UserResult = SafeShort(data.UserResult)
                         });
                     }
                 }
