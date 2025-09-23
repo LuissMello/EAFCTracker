@@ -1,6 +1,7 @@
 ﻿using EAFCMatchTracker.Dtos;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Linq;
 
 namespace EAFCMatchTracker.Controllers;
 
@@ -385,6 +386,80 @@ public class ClubsController : ControllerBase
 
         return NoContent();
     }
+
+    [HttpGet("grouped/matches/statistics/limited")]
+    public async Task<IActionResult> GetGroupedLimited(
+        [FromQuery] string clubIds,
+        [FromQuery] int count = 20,
+        [FromQuery] int? opponentCount = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(clubIds))
+            return BadRequest("clubIds required");
+
+        var ids = clubIds
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => long.TryParse(s, out var x) ? x : (long?)null)
+            .Where(x => x.HasValue)
+            .Select(x => x!.Value)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return BadRequest("invalid clubIds");
+
+        // Base: MatchClubs dos clubes selecionados + descobrir nº de jogadores do oponente por jogo
+        var qBase =
+            from mc in _db.MatchClubs.AsNoTracking()
+            where ids.Contains(mc.ClubId)
+            join mcOpp in _db.MatchClubs.AsNoTracking()
+                on mc.MatchId equals mcOpp.MatchId
+            where mcOpp.ClubId != mc.ClubId
+            join mpOpp in _db.MatchPlayers.AsNoTracking()
+                on new { mcOpp.MatchId, mcOpp.ClubId } equals new { MatchId = mpOpp.MatchId, ClubId = mpOpp.ClubId }
+                into mpOppGrp
+            select new
+            {
+                mc.MatchId,
+                mc.Date,
+                OpponentPlayers = mpOppGrp.Count()
+            };
+
+        if (opponentCount.HasValue)
+            qBase = qBase.Where(x => x.OpponentPlayers == opponentCount.Value);
+
+        // Pegar os N jogos globais (no conjunto)
+        var lastMatches = await qBase
+            .GroupBy(x => x.MatchId)
+            .Select(g => new { MatchId = g.Key, Date = g.Max(x => x.Date) })
+            .OrderByDescending(x => x.Date)
+            .Take(count)
+            .ToListAsync(ct);
+
+        if (lastMatches.Count == 0)
+            return Ok(new { players = Array.Empty<object>(), clubs = Array.Empty<object>() });
+
+        var lastMatchIds = lastMatches.Select(x => x.MatchId).ToList();
+
+        // Players somente dos clubes selecionados nesses jogos
+        var players = await _db.MatchPlayers
+            .AsNoTracking()
+            .Where(p => lastMatchIds.Contains(p.MatchId) && ids.Contains(p.ClubId))
+            .Include(p => p.Player) // precisamos do Player.PlayerId e Player.Playername
+            .ToListAsync(ct);
+
+        // === Aggregation no modo "clubes como um só" ===
+        var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(players);
+        var clubStatsSingle = StatsAggregator.BuildSingleClubFromPlayers(players, clubName: "Clubes agrupados");
+
+        return Ok(new
+        {
+            players = playerStats,
+            clubs = new[] { clubStatsSingle }
+        });
+    }
+
+
 
     private IQueryable<MatchEntity> BaseClubMatchesQuery(long clubId) =>
         _db.Matches

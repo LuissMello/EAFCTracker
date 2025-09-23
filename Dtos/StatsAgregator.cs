@@ -370,5 +370,137 @@ namespace EAFCMatchTracker.Dtos
                 .OrderBy(x => x.ClubId)
                 .ToList();
         }
+
+        /// <summary>
+        /// Agrupa por Player.PlayerId (global) para que o mesmo jogador, jogando por clubes diferentes,
+        /// apareça apenas uma vez no modo "clubes agrupados".
+        /// </summary>
+        public static List<PlayerStatisticsDto> BuildPerPlayerMergedByGlobalId(IEnumerable<MatchPlayerEntity> players)
+        {
+            // Garantir materialização para não iterar várias vezes
+            var list = players as IList<MatchPlayerEntity> ?? players.ToList();
+
+            return list
+                .Where(p => p.Player != null) // precisamos do Player.PlayerId
+                .GroupBy(p => p.Player.PlayerId) // <-- chave global do jogador
+                .Select(g =>
+                {
+                    // Pega um "representante" — o mais recente por MatchId (maior MatchId) para nome/club fallback
+                    var repr = g.OrderByDescending(x => x.MatchId).First();
+
+                    int matches = g.Count();
+                    int goals = g.Sum(p => p.Goals);
+                    int shots = g.Sum(p => p.Shots);
+                    int passesMade = g.Sum(p => p.Passesmade);
+                    int passAttempts = g.Sum(p => p.Passattempts);
+                    int tacklesMade = g.Sum(p => p.Tacklesmade);
+                    int tackleAttempts = g.Sum(p => p.Tackleattempts);
+                    int wins = g.Sum(p => p.Wins);
+                    int losses = g.Sum(p => p.Losses);
+                    int draws = Math.Max(0, matches - wins - losses);
+
+                    return new PlayerStatisticsDto
+                    {
+                        // Usa o PlayerId global na saída (se o seu DTO já é long, ajuste o tipo)
+                        PlayerId = repr.Player.PlayerId,
+                        PlayerName = repr.Player.Playername ?? "Unknown",
+                        // Como estamos agrupando clubes, não faz sentido devolver um único ClubId real.
+                        // Use 0 (ou null se seu DTO permitir) apenas para preencher o contrato atual.
+                        ClubId = 0,
+
+                        MatchesPlayed = matches,
+                        TotalGoals = goals,
+                        TotalAssists = g.Sum(p => p.Assists),
+                        TotalShots = shots,
+                        TotalPassesMade = passesMade,
+                        TotalPassAttempts = passAttempts,
+                        TotalTacklesMade = tacklesMade,
+                        TotalTackleAttempts = tackleAttempts,
+                        TotalWins = wins,
+                        TotalLosses = losses,
+                        TotalDraws = draws,
+                        TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
+                        TotalRedCards = g.Sum(p => p.Redcards),
+                        TotalSaves = g.Sum(p => p.Saves),
+                        TotalMom = g.Count(p => p.Mom),
+                        TotalGoalsConceded = g.Sum(p => p.Goalsconceded),
+
+                        AvgRating = g.Any() ? g.Average(p => p.Rating) : 0,
+                        PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
+                        TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
+                        GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0,
+                        WinPercent = matches > 0 ? (wins * 100.0) / matches : 0
+                    };
+                })
+                // opcional: ordenar por partidas (ou por gols, etc.)
+                .OrderByDescending(p => p.MatchesPlayed)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Produz um único ClubStatisticsDto agregando todos os MatchPlayers recebidos
+        /// (modo "clubes agrupados como um só").
+        /// </summary>
+        public static ClubStatisticsDto BuildSingleClubFromPlayers(IEnumerable<MatchPlayerEntity> players, string? clubName = null, string? crestAssetId = null)
+        {
+            var list = players as IList<MatchPlayerEntity> ?? players.ToList();
+
+            // Agregação por partida para wins/losses/draws sem multiplicar por número de jogadores
+            var matchesById = list.GroupBy(p => p.MatchId).ToList();
+            int matches = matchesById.Count;
+
+            int wins = matchesById.Sum(mg => (int)mg.First().Wins);
+            int losses = matchesById.Sum(mg => (int)mg.First().Losses);
+            int draws = Math.Max(0, matches - wins - losses);
+
+            int goalsConceded = matchesById.Sum(mg => (int)mg.First().Goalsconceded);
+
+            int goals = list.Sum(p => p.Goals);
+            int shots = list.Sum(p => p.Shots);
+            int passesMade = list.Sum(p => p.Passesmade);
+            int passAttempts = list.Sum(p => p.Passattempts);
+            int tacklesMade = list.Sum(p => p.Tacklesmade);
+            int tackleAttempts = list.Sum(p => p.Tackleattempts);
+            int cleanSheets = list.Sum(p => p.Cleansheetsany);
+            int redCards = list.Sum(p => p.Redcards);
+            int saves = list.Sum(p => p.Saves);
+            int momCount = list.Count(p => p.Mom);
+            double avgRating = list.Any() ? list.Average(p => p.Rating) : 0.0;
+
+            return new ClubStatisticsDto
+            {
+                ClubId = 0, // marcador "agregado"
+                ClubName = string.IsNullOrWhiteSpace(clubName) ? "Clubes agrupados" : clubName,
+                ClubCrestAssetId = crestAssetId,
+
+                MatchesPlayed = matches,
+
+                TotalGoals = goals,
+                TotalGoalsConceded = goalsConceded,
+
+                TotalAssists = list.Sum(p => p.Assists),
+                TotalShots = shots,
+                TotalPassesMade = passesMade,
+                TotalPassAttempts = passAttempts,
+                TotalTacklesMade = tacklesMade,
+                TotalTackleAttempts = tackleAttempts,
+
+                TotalWins = wins,
+                TotalLosses = losses,
+                TotalDraws = draws,
+
+                TotalCleanSheets = cleanSheets,
+                TotalRedCards = redCards,
+                TotalSaves = saves,
+                TotalMom = momCount,
+
+                AvgRating = avgRating,
+
+                WinPercent = matches > 0 ? wins * 100.0 / matches : 0,
+                PassAccuracyPercent = passAttempts > 0 ? passesMade * 100.0 / passAttempts : 0,
+                TackleSuccessPercent = tackleAttempts > 0 ? tacklesMade * 100.0 / tackleAttempts : 0,
+                GoalAccuracyPercent = shots > 0 ? goals * 100.0 / shots : 0
+            };
+        }
     }
 }
