@@ -1,4 +1,5 @@
 using EAFCMatchTracker.Services;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -67,6 +68,35 @@ public class ClubMatchBackgroundService : BackgroundService
                             _logger.LogError(ex, "Erro ao buscar/armazenar partidas para ClubId={ClubId}.", clubId);
                             // Continua com os demais clubes
                         }
+                    }
+
+                    try
+                    {
+                        var db = scope.ServiceProvider.GetRequiredService<EAFCContext>();
+                        var now = DateTimeOffset.UtcNow;
+
+                        var audit = await db.SystemFetchAudits
+                            .SingleOrDefaultAsync(x => x.Id == 1, stoppingToken);
+
+                        if (audit == null)
+                        {
+                            db.SystemFetchAudits.Add(new SystemFetchAudit
+                            {
+                                Id = 1,
+                                LastFetchedAt = now
+                            });
+                        }
+                        else
+                        {
+                            audit.LastFetchedAt = now;
+                        }
+
+                        await db.SaveChangesAsync(stoppingToken);
+                        _logger.LogInformation("Última busca registrada em {WhenUtc} (UTC).", now);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Falha ao registrar a hora da última busca.");
                     }
                 }
 

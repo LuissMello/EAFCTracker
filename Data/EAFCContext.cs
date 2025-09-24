@@ -11,6 +11,8 @@ public class EAFCContext : DbContext
     public DbSet<PlayerMatchStatsEntity> PlayerMatchStats { get; set; }
     public DbSet<OverallStatsEntity> OverallStats { get; set; }
     public DbSet<PlayoffAchievementEntity> PlayoffAchievements { get; set; }
+    public DbSet<SystemFetchAudit> SystemFetchAudits { get; set; }
+
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -111,5 +113,20 @@ public class EAFCContext : DbContext
 
         modelBuilder.Entity<PlayoffAchievementEntity>()
             .HasIndex(p => p.ClubId);
+
+
+        // OnModelCreating(...)
+        modelBuilder.Entity<SystemFetchAudit>()
+        .HasKey(x => x.Id);
+
+        modelBuilder.Entity<SystemFetchAudit>()
+        .Property(x => x.Id)
+        .ValueGeneratedNever();
+
+        // opcional: semear 1 linha inicial para evitar null
+        modelBuilder.Entity<SystemFetchAudit>()
+        .HasData(new SystemFetchAudit { Id = 1, LastFetchedAt = DateTimeOffset.MinValue
+         });
+
     }
 }

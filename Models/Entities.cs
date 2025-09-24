@@ -337,3 +337,10 @@ public class PlayoffAchievementEntity
     public DateTime RetrievedAtUtc { get; set; }   // quando criamos o registro
     public DateTime UpdatedAtUtc { get; set; }     // última atualização via ingest
 }
+
+// Domain/Entities/SystemFetchAudit.cs
+public class SystemFetchAudit
+{
+    public int Id { get; set; } = 1;                 // sempre 1 (registro singleton)
+    public DateTimeOffset LastFetchedAt { get; set; } // UTC
+}
