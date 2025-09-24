@@ -1,7 +1,8 @@
 ﻿using EAFCMatchTracker.Interfaces;
 using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
 using System.Linq;
+using System.Text.Json;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace EAFCMatchTracker.Services;
 
@@ -270,7 +271,7 @@ public class ClubMatchService : IClubMatchService
                             Passattempts = SafeShort(data.Passattempts),
                             Passesmade = SafeShort(data.Passesmade),
                             Pos = data.Pos ?? "",
-                            Rating = SafeDouble(data.Rating),
+                            Rating = NormalizeRating(SafeDouble(data.Rating)),
                             Realtimegame = data.Realtimegame ?? "",
                             Realtimeidle = data.Realtimeidle ?? "",
                             Redcards = SafeShort(data.Redcards),
@@ -345,6 +346,18 @@ public class ClubMatchService : IClubMatchService
 
     private static double SafeDouble(object value)
         => double.TryParse(Convert.ToString(value), out var d) ? d : 0.0;
+
+    private static double NormalizeRating(double rating)
+    {
+        if (double.IsNaN(rating) || double.IsInfinity(rating)) return 0d;
+
+        var scaled = rating > 10 ? rating / 100d : rating;
+
+        if (scaled < 0) scaled = 0;
+        if (scaled > 10) scaled = 10;
+
+        return Math.Round(scaled, 2, MidpointRounding.AwayFromZero);
+    }
 
     // ===== NOVO: Overall =====
 
