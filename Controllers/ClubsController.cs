@@ -412,17 +412,22 @@ public class ClubsController : ControllerBase
         var qBase =
             from mc in _db.MatchClubs.AsNoTracking()
             where ids.Contains(mc.ClubId)
-            join mcOpp in _db.MatchClubs.AsNoTracking()
-                on mc.MatchId equals mcOpp.MatchId
-            where mcOpp.ClubId != mc.ClubId
-            join mpOpp in _db.MatchPlayers.AsNoTracking()
-                on new { mcOpp.MatchId, mcOpp.ClubId } equals new { MatchId = mpOpp.MatchId, ClubId = mpOpp.ClubId }
-                into mpOppGrp
+
+            // "join" para o oponente usando from ... Where (evita Equals de anônimo)
+            from mcOpp in _db.MatchClubs.AsNoTracking()
+                .Where(x => x.MatchId == mc.MatchId && x.ClubId != mc.ClubId)
+
+                // Conta jogadores do oponente via subconsulta correlacionada
             select new
             {
                 mc.MatchId,
                 mc.Date,
-                OpponentPlayers = mpOppGrp.Count()
+                OpponentPlayers =
+                    _db.MatchPlayers.AsNoTracking()
+                        .Where(mp => mp.MatchId == mcOpp.MatchId && mp.ClubId == mcOpp.ClubId)
+                        .Select(mp => mp.PlayerEntityId)  // opcional: Distinct() se houver risco de duplicatas
+                        .Distinct()
+                        .Count()
             };
 
         if (opponentCount.HasValue)
