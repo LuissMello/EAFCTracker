@@ -161,7 +161,7 @@ namespace EAFCMatchTracker.Dtos
                     {
                         ClubId = g.Key,
                         ClubName = clubEntity?.Details?.Name ?? $"Clube {g.Key}",
-                        ClubCrestAssetId = clubEntity?.Details?.CrestAssetId,
+                        ClubCrestAssetId = clubEntity?.Team.ToString(),
 
                         MatchesPlayed = matches,
 

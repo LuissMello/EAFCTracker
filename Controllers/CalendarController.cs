@@ -215,11 +215,11 @@ public class CalendarController : ControllerBase
             ClubAId = a.ClubId,
             ClubAName = a.Details?.Name ?? $"Clube {a.ClubId}",
             ClubAGoals = a.Goals,
-            ClubACrestAssetId = a.Details?.CrestAssetId,
+            ClubACrestAssetId = a.Team.ToString(),
             ClubBId = b.ClubId,
             ClubBName = b.Details?.Name ?? $"Clube {b.ClubId}",
             ClubBGoals = b.Goals,
-            ClubBCrestAssetId = b.Details?.CrestAssetId,
+            ClubBCrestAssetId = b.Team.ToString(),
             ResultForClub = resultForClub,
             Stats = aggregatedStats
         };

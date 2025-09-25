@@ -34,7 +34,7 @@ public class ClubsController : ControllerBase
             {
                 mc.ClubId,
                 mc.Details.Name,
-                Crest = mc.Details.CrestAssetId,
+                Crest = mc.Team.ToString(),
                 Ts = mc.Match.Timestamp
             })
             .OrderByDescending(x => x.Ts)
@@ -172,6 +172,34 @@ public class ClubsController : ControllerBase
         return Ok(players);
     }
 
+    [HttpGet("{clubId:long}/overall-and-playoffs")]
+    public async Task<IActionResult> GetClubOverallAndPlayoffs(long clubId, CancellationToken ct)
+    {
+        if (clubId <= 0)
+            return BadRequest("Informe um clubId válido.");
+
+        var overallEntities = await _db.OverallStats
+            .AsNoTracking()
+            .Where(o => o.ClubId == clubId)
+            .ToListAsync(ct);
+
+        var playoffEntities = await _db.PlayoffAchievements
+            .AsNoTracking()
+            .Where(p => p.ClubId == clubId)
+            .ToListAsync(ct);
+
+        var clubsOverall = StatsAggregator.BuildClubsOverall(overallEntities);
+        var clubsPlayoffAchievements = StatsAggregator.BuildClubsPlayoffAchievements(playoffEntities);
+
+        // Mantém o payload compatível com o já utilizado no front:
+        // { ClubsOverall: [...], ClubsPlayoffAchievements: [...] }
+        return Ok(new
+        {
+            ClubsOverall = clubsOverall,
+            ClubsPlayoffAchievements = clubsPlayoffAchievements
+        });
+    }
+
     [HttpGet("{clubId:long}/matches/statistics")]
     public async Task<ActionResult<FullMatchStatisticsDto>> GetMatchStatistics(long clubId, CancellationToken ct)
     {
@@ -181,10 +209,19 @@ public class ClubsController : ControllerBase
             .OrderByDescending(m => m.Timestamp)
             .ToListAsync(ct);
 
-        var allPlayers = matches.SelectMany(m => m.MatchPlayers).Where(e => e.Player.ClubId == clubId).ToList();
-        if (allPlayers.Count == 0) return Ok(new FullMatchStatisticsDto());
+        var allPlayers = matches
+            .SelectMany(m => m.MatchPlayers)
+            .Where(e => e.Player.ClubId == clubId)
+            .ToList();
 
-        var clubsById = matches.SelectMany(m => m.Clubs).ToDictionary(c => c.ClubId, c => c);
+        if (allPlayers.Count == 0)
+            return Ok(new FullMatchStatisticsDto());
+
+        var clubsById = matches
+            .SelectMany(m => m.Clubs)
+            .GroupBy(c => c.ClubId)
+            .ToDictionary(g => g.Key, g => g.First());
+
         var playersStats = StatsAggregator.BuildPerPlayer(allPlayers);
         var clubsStats = StatsAggregator.BuildPerClub(allPlayers, clubsById);
 
@@ -334,6 +371,9 @@ public class ClubsController : ControllerBase
                 ClubBSummary = BuildClubSummaryNames(match, b.ClubId, redB, motmId),
                 ResultText = $"{a.Details?.Name ?? "Clube A"} {a.Goals} x {b.Goals} {b.Details?.Name ?? "Clube B"}"
             };
+
+            dto.ClubADetails.Team = a.Team.ToString();
+            dto.ClubBDetails.Team = b.Team.ToString();
 
             result.Add(dto);
         }
@@ -513,7 +553,7 @@ public class ClubsController : ControllerBase
             DCustomKit = d.DCustomKit,
             CrestColor = d.CrestColor,
             CrestAssetId = d.CrestAssetId,
-            SelectedKitType = d.SelectedKitType
+            SelectedKitType = d.SelectedKitType,
         };
 
     private static long? GetManOfTheMatchId(MatchEntity match)

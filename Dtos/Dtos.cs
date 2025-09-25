@@ -274,6 +274,7 @@ public sealed class ClubDetailsDto
     public string? CrestColor { get; set; }
     public string? CrestAssetId { get; set; }
     public string? SelectedKitType { get; set; }
+    public string? Team { get; set; }
 }
 
 public sealed class ClubMatchSummaryDto
