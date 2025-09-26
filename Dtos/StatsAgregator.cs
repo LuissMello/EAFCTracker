@@ -333,6 +333,7 @@ namespace EAFCMatchTracker.Dtos
                 SkillRating = o.SkillRating,
                 Reputationtier = o.Reputationtier,
                 LeagueAppearances = o.LeagueAppearances,
+                CurrentDivision = o.CurrentDivision.ToString(),
                 UpdatedAtUtc = o.UpdatedAtUtc
             })
             .OrderBy(x => x.ClubId)

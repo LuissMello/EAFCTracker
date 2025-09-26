@@ -440,6 +440,7 @@ public sealed class ClubOverallStatsDto
     public string? SkillRating { get; set; }
     public string? Reputationtier { get; set; }
     public string? LeagueAppearances { get; set; }
+    public string? CurrentDivision { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
 }
 
