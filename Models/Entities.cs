@@ -128,6 +128,10 @@ public class MatchPlayerEntity
     public short ReflexSaves { get; set; }
     public short SecondsPlayed { get; set; }
     public short UserResult { get; set; }
+    public int? ProOverall { get; set; }
+    public string? ProOverallStr { get; set; }
+    public int? ProHeight { get; set; }
+    public string? ProName { get; set; }
 
     // Chave estrangeira para PlayerMatchStatsEntity
     public long PlayerMatchStatsEntityId { get; set; }  // Garante a correspondência com PlayerMatchStats.Id
@@ -313,6 +317,7 @@ public class OverallStatsEntity
     public string? SkillRating { get; set; }
     public string? Reputationtier { get; set; }
     public string? LeagueAppearances { get; set; }
+    public int? CurrentDivision { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; }
 }

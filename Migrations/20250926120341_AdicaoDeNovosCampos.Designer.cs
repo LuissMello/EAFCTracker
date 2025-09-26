@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -10,9 +11,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EAFCMatchTracker.Migrations
 {
     [DbContext(typeof(EAFCContext))]
-    partial class EAFCContextModelSnapshot : ModelSnapshot
+    [Migration("20250926120341_AdicaoDeNovosCampos")]
+    partial class AdicaoDeNovosCampos
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -275,9 +278,6 @@ namespace EAFCMatchTracker.Migrations
 
                     b.Property<long>("ClubId")
                         .HasColumnType("bigint");
-
-                    b.Property<int?>("CurrentDivision")
-                        .HasColumnType("integer");
 
                     b.Property<string>("GamesPlayed")
                         .HasColumnType("text");
@@ -564,6 +564,9 @@ namespace EAFCMatchTracker.Migrations
 
                             b1.Property<string>("CrestColor")
                                 .HasColumnType("text");
+
+                            b1.Property<int?>("CurrentDivision")
+                                .HasColumnType("integer");
 
                             b1.Property<string>("CustomAwayKitId")
                                 .HasColumnType("text");

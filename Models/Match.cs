@@ -217,3 +217,48 @@ public class PlayoffAchievement
     public string BestFinishGroup { get; set; }
 }
 
+public sealed class SearchClubResult
+{
+    public string clubId { get; set; } = default!;
+    public string wins { get; set; } = default!;
+    public string losses { get; set; } = default!;
+    public string ties { get; set; } = default!;
+    public string gamesPlayed { get; set; } = default!;
+    public string gamesPlayedPlayoff { get; set; } = default!;
+    public string goals { get; set; } = default!;
+    public string goalsAgainst { get; set; } = default!;
+    public string cleanSheets { get; set; } = default!;
+    public string points { get; set; } = default!;
+    public string reputationtier { get; set; } = default!;
+    public string promotions { get; set; } = default!;
+    public string relegations { get; set; } = default!;
+    public string bestDivision { get; set; } = default!;
+    public SearchClubInfo clubInfo { get; set; } = default!;
+    public string platform { get; set; } = default!;
+    public string clubName { get; set; } = default!;
+    public string currentDivision { get; set; } = default!;
+}
+
+public sealed class SearchClubInfo
+{
+    public string name { get; set; } = default!;
+    public long clubId { get; set; }
+    public long regionId { get; set; }
+    public long teamId { get; set; }
+    public CustomKit? customKit { get; set; }
+}
+
+public sealed class MembersStatsResponse
+{
+    public List<MemberStats> members { get; set; } = new();
+    public Dictionary<string, int>? positionCount { get; set; }
+}
+
+public sealed class MemberStats
+{
+    public string name { get; set; } = default!;
+    public string proOverall { get; set; } = default!;
+    public string proOverallStr { get; set; } = default!;
+    public string proHeight { get; set; } = default!;
+    public string proName { get; set; } = default!;
+}
