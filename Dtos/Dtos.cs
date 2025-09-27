@@ -162,6 +162,9 @@ public class PlayerStatisticsDto
     public double TackleSuccessPercent { get; set; }
     public double GoalAccuracyPercent { get; set; }
     public double WinPercent { get; set; }
+    public string? ProOverallStr { get; set; }
+    public int? ProHeight { get; set; }
+    public string? ProName { get; set; }
 }
 
 public class ClubStatisticsDto

@@ -80,6 +80,7 @@ namespace EAFCMatchTracker.Dtos
                 .Select(g =>
                 {
                     var player = g.First().Player;
+                    var matchPlayer = g.First();
                     int matches = g.Count();
                     int goals = g.Sum(p => p.Goals);
                     int shots = g.Sum(p => p.Shots);
@@ -96,6 +97,9 @@ namespace EAFCMatchTracker.Dtos
                         PlayerId = g.Key,
                         PlayerName = player?.Playername ?? "Unknown",
                         ClubId = player?.ClubId ?? 0,
+                        ProHeight = matchPlayer.ProHeight,
+                        ProName = matchPlayer.ProName,
+                        ProOverallStr = matchPlayer.ProOverallStr,
 
                         MatchesPlayed = matches,
                         TotalGoals = goals,
@@ -408,6 +412,10 @@ namespace EAFCMatchTracker.Dtos
                         // Como estamos agrupando clubes, não faz sentido devolver um único ClubId real.
                         // Use 0 (ou null se seu DTO permitir) apenas para preencher o contrato atual.
                         ClubId = 0,
+
+                        ProName = repr.ProName,
+                        ProOverallStr = repr.ProOverallStr,
+                        ProHeight = repr.ProHeight,
 
                         MatchesPlayed = matches,
                         TotalGoals = goals,
