@@ -1,6 +1,8 @@
 ﻿using EAFCMatchTracker.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 
@@ -15,7 +17,13 @@ public class ClubMatchService : IClubMatchService
 
     public ClubMatchService(HttpClient httpClient, IConfiguration config, EAFCContext db)
     {
-        _httpClient = httpClient;
+        var handler = new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+        };
+
+        _httpClient = new HttpClient(handler, disposeHandler: true);
+        _httpClient.Timeout = TimeSpan.FromSeconds(60);
         _config = config;
         _db = db;
     }
@@ -56,24 +64,44 @@ public class ClubMatchService : IClubMatchService
         }
     }
 
-    private async Task<List<Match>> FetchMatches(string clubId, string matchType)
+    private async Task<List<Match>> FetchMatches(string clubId, string matchType, CancellationToken ct = default)
     {
         var endpointTemplate = _config["EAFCSettings:ClubMatchesEndpoint"];
         var baseUrl = _config["EAFCSettings:BaseUrl"];
-        var endpoint = new Uri(baseUrl) + string.Format(endpointTemplate, clubId, matchType);
 
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PostmanRuntime/7.36.0");
-        _httpClient.DefaultRequestHeaders.Connection.ParseAdd("keep-alive");
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            throw new InvalidOperationException("EAFCSettings:BaseUrl não configurado.");
+        if (string.IsNullOrWhiteSpace(endpointTemplate))
+            throw new InvalidOperationException("EAFCSettings:ClubMatchesEndpoint não configurado.");
 
-        var response = await _httpClient.GetAsync(endpoint);
+
+        var endpoint = new Uri(new Uri(baseUrl) + string.Format(endpointTemplate, clubId, matchType));
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint)
+        {
+            Version = HttpVersion.Version20, // tenta HTTP/2 quando possível
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
+        };
+
+        // Headers
+        request.Headers.UserAgent.ParseAdd("PostmanRuntime/7.46.1");
+        request.Headers.Connection.Clear();
+        request.Headers.Connection.Add("keep-alive");
+        request.Headers.Accept.ParseAdd("application/json");
+        request.Headers.AcceptEncoding.ParseAdd("gzip, deflate, br");
+
+        // Calcula Host corretamente (com porta se não for padrão)
+        var hostHeader = endpoint.IsDefaultPort ? endpoint.IdnHost : $"{endpoint.IdnHost}:{endpoint.Port}";
+        request.Headers.Host = hostHeader;
+
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
 
-        var json = await response.Content.ReadAsStringAsync();
-
+        var json = await response.Content.ReadAsStringAsync(ct);
         var matches = JsonSerializer.Deserialize<List<Match>>(json, _jsonOpts) ?? new List<Match>();
-
         return matches;
     }
+
 
     // =========================
     // DTOs mínimos p/ integrações externas
