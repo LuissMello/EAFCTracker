@@ -40,7 +40,6 @@ builder.Services.AddHttpClient<IEAHttpClient, EAHttpClient>(client =>
 );
 
 builder.Services.Configure<EAFCSettings>(builder.Configuration.GetSection("EAFCSettings"));
-builder.Services.AddSingleton<IEAFCService, EAFCService>();
 
 Console.WriteLine("ConnectionString:");
 Console.WriteLine(builder.Configuration.GetConnectionString("Default") ?? "NULO ou não encontrada");
