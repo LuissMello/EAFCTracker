@@ -13,7 +13,7 @@ public class ClubMatchService : IClubMatchService
     private readonly EAFCContext _db;
     private readonly JsonSerializerOptions _jsonOpts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-    public ClubMatchService(EAHttpClient backend, IConfiguration config, EAFCContext db)
+    public ClubMatchService(IEAHttpClient backend, IConfiguration config, EAFCContext db)
     {
         _eaHttpClient = backend;
         _config = config;
@@ -75,9 +75,6 @@ public class ClubMatchService : IClubMatchService
         return matches;
     }
 
-    // =========================
-    // DTOs mínimos p/ integrações externas
-    // =========================
     private sealed class SearchClubResult
     {
         public string clubId { get; set; } = default!;
@@ -106,9 +103,6 @@ public class ClubMatchService : IClubMatchService
         public string? proName { get; set; }
     }
 
-    // =========================
-    // Helpers externos (via IBackendCaller)
-    // =========================
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
@@ -121,7 +115,6 @@ public class ClubMatchService : IClubMatchService
 
         var payload = JsonSerializer.Deserialize<List<SearchClubResult>>(json, _jsonOpts) ?? new();
 
-        // tenta casar por clubId primeiro
         var byId = payload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
         var pick = byId ?? payload.FirstOrDefault();
         if (pick == null) return null;
@@ -150,9 +143,6 @@ public class ClubMatchService : IClubMatchService
 
     private static int? ToNullableInt(string? s) => int.TryParse(s, out var v) ? v : (int?)null;
 
-    // =========================
-    // SaveMatchAsync com integrações externas
-    // =========================
     private async Task SaveMatchAsync(Match match, string matchType, CancellationToken ct = default)
     {
         if (match == null || string.IsNullOrWhiteSpace(match.MatchId))
@@ -160,7 +150,6 @@ public class ClubMatchService : IClubMatchService
 
         long matchId = Convert.ToInt64(match.MatchId);
 
-        // -------- PRÉ-BUSCAS externas por clube (fora da transação) --------
         var preFetchedDivisions = new Dictionary<long, int?>();
         var preFetchedMembers = new Dictionary<long, MembersStatsResponse?>();
 
@@ -171,16 +160,14 @@ public class ClubMatchService : IClubMatchService
                 var cid = long.Parse(kv.Key);
                 var name = kv.Value?.Details?.Name?.Trim();
 
-                // currentDivision via SearchClubsEndpoint (por nome)
                 int? div = null;
                 if (!string.IsNullOrWhiteSpace(name))
                 {
                     try { div = await FetchCurrentDivisionByNameAsync(name!, cid, ct); }
-                    catch { /* tolerante a falhas externas */ }
+                    catch { }
                 }
                 preFetchedDivisions[cid] = div;
 
-                // /members/stats por clubId
                 try { preFetchedMembers[cid] = await FetchMembersStatsAsync(cid, ct); }
                 catch { preFetchedMembers[cid] = null; }
             });
@@ -238,7 +225,6 @@ public class ClubMatchService : IClubMatchService
                         SelectedKitType = club.Details?.CustomKit?.SelectedKitType,
                     };
 
-                    // Mantém o comportamento original de buscar overall/playoffs.
                     await FetchAndUpsertOverallStatsAsync(clubId, ct);
 
                     var mc = new MatchClubEntity
@@ -333,7 +319,6 @@ public class ClubMatchService : IClubMatchService
                 {
                     long cid = long.Parse(clubEntry.Key);
 
-                    // dicionário name -> MemberStats (case-insensitive) deste clube (se disponível)
                     var members = preFetchedMembers.TryGetValue(cid, out var ms) ? ms : null;
                     var byName = (members?.members ?? new List<MemberStats>())
                         .GroupBy(m => (m.name ?? "").Trim(), StringComparer.OrdinalIgnoreCase)
@@ -363,7 +348,6 @@ public class ClubMatchService : IClubMatchService
                             statsId = lastStats.Id;
                         }
 
-                        // enriquecer com /members/stats (match por Playername)
                         MemberStats? mm = null;
                         var keyName = (p.Playername ?? "").Trim();
                         if (!string.IsNullOrEmpty(keyName))
@@ -414,7 +398,6 @@ public class ClubMatchService : IClubMatchService
                             SecondsPlayed = SafeShort(data.SecondsPlayed),
                             UserResult = SafeShort(data.UserResult),
 
-                            // ===== NOVOS CAMPOS DO MEMBERS/STATS =====
                             ProOverall = ToNullableInt(mm?.proOverall),
                             ProOverallStr = mm?.proOverallStr,
                             ProHeight = ToNullableInt(mm?.proHeight),
@@ -481,7 +464,6 @@ public class ClubMatchService : IClubMatchService
         return Math.Round(scaled, 2, MidpointRounding.AwayFromZero);
     }
 
-    // ===== OVERALL / PLAYOFFS (mantido) =====
     private async Task FetchAndUpsertOverallStatsAsync(long clubId, CancellationToken ct)
     {
         try
@@ -498,7 +480,6 @@ public class ClubMatchService : IClubMatchService
             var overallUri = BuildUri(baseUrl, string.Format(overallTpl, clubId));
             var playoffsUri = BuildUri(baseUrl, string.Format(playoffsTpl, clubId));
 
-            // Buscar em paralelo usando o caller
             var overallTask = _eaHttpClient.GetStringAsync(overallUri, ct);
             var playoffsTask = _eaHttpClient.GetStringAsync(playoffsUri, ct);
 
@@ -507,7 +488,6 @@ public class ClubMatchService : IClubMatchService
             var jsonOverall = overallTask.Result;
             var jsonPlayoffs = playoffsTask.Result;
 
-            // OVERALL (comportamento original)
             if (!string.IsNullOrWhiteSpace(jsonOverall))
             {
                 List<OverallStats>? list = null;
@@ -541,7 +521,6 @@ public class ClubMatchService : IClubMatchService
                     }
                     catch
                     {
-                        // silencioso
                     }
 
                     if (existing == null)
@@ -559,7 +538,6 @@ public class ClubMatchService : IClubMatchService
                 }
             }
 
-            // PLAYOFF ACHIEVEMENTS
             if (!string.IsNullOrWhiteSpace(jsonPlayoffs))
             {
                 List<PlayoffAchievement>? items = null;
@@ -578,7 +556,6 @@ public class ClubMatchService : IClubMatchService
         }
         catch
         {
-            // Silencioso por robustez
         }
     }
 
