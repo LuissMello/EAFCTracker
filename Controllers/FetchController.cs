@@ -1,4 +1,4 @@
-﻿using EAFCMatchTracker.Interfaces;
+﻿using EAFCMatchTracker.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 

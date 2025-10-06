@@ -1,36 +1,28 @@
-﻿using EAFCMatchTracker.Interfaces;
+﻿using EAFCMatchTracker.Infrastructure.Http;
+using EAFCMatchTracker.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Net.Http.Json;
 using System.Text.Json;
 
 namespace EAFCMatchTracker.Services;
 
 public class ClubMatchService : IClubMatchService
 {
-    private readonly HttpClient _httpClient;
+    private readonly IEAHttpClient _eaHttpClient;
     private readonly IConfiguration _config;
     private readonly EAFCContext _db;
     private readonly JsonSerializerOptions _jsonOpts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-    public ClubMatchService(HttpClient httpClient, IConfiguration config, EAFCContext db)
+    public ClubMatchService(EAHttpClient backend, IConfiguration config, EAFCContext db)
     {
-        var handler = new HttpClientHandler
-        {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
-        };
-
-        _httpClient = new HttpClient(handler, disposeHandler: true);
-        _httpClient.Timeout = TimeSpan.FromSeconds(60);
+        _eaHttpClient = backend;
         _config = config;
         _db = db;
     }
 
     public async Task FetchAndStoreMatchesAsync(string clubId, string matchType, CancellationToken ct)
     {
-        var matches = await FetchMatches(clubId, matchType);
+        var matches = await FetchMatches(clubId, matchType, ct);
         if (matches.Count == 0) return;
 
         var idMap = matches
@@ -74,34 +66,14 @@ public class ClubMatchService : IClubMatchService
         if (string.IsNullOrWhiteSpace(endpointTemplate))
             throw new InvalidOperationException("EAFCSettings:ClubMatchesEndpoint não configurado.");
 
+        var endpoint = new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), string.Format(endpointTemplate, clubId, matchType));
 
-        var endpoint = new Uri(new Uri(baseUrl) + string.Format(endpointTemplate, clubId, matchType));
+        var json = await _eaHttpClient.GetStringAsync(endpoint, ct);
+        if (json is null) return new List<Match>();
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint)
-        {
-            Version = HttpVersion.Version20, // tenta HTTP/2 quando possível
-            VersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
-        };
-
-        // Headers
-        request.Headers.UserAgent.ParseAdd("PostmanRuntime/7.46.1");
-        request.Headers.Connection.Clear();
-        request.Headers.Connection.Add("keep-alive");
-        request.Headers.Accept.ParseAdd("application/json");
-        request.Headers.AcceptEncoding.ParseAdd("gzip, deflate, br");
-
-        // Calcula Host corretamente (com porta se não for padrão)
-        var hostHeader = endpoint.IsDefaultPort ? endpoint.IdnHost : $"{endpoint.IdnHost}:{endpoint.Port}";
-        request.Headers.Host = hostHeader;
-
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
-
-        var json = await response.Content.ReadAsStringAsync(ct);
         var matches = JsonSerializer.Deserialize<List<Match>>(json, _jsonOpts) ?? new List<Match>();
         return matches;
     }
-
 
     // =========================
     // DTOs mínimos p/ integrações externas
@@ -135,18 +107,19 @@ public class ClubMatchService : IClubMatchService
     }
 
     // =========================
-    // Helpers externos
+    // Helpers externos (via IBackendCaller)
     // =========================
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
         var searchTpl = _config["EAFCSettings:SearchClubsEndpoint"] ?? "/allTimeLeaderboard/search?platform=common-gen5&clubName={0}";
-        var url = $"{baseUrl.TrimEnd('/')}/{string.Format(searchTpl, Uri.EscapeDataString(clubName)).TrimStart('/')}";
 
-        using var resp = await _httpClient.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        var uri = BuildUri(baseUrl, string.Format(searchTpl, Uri.EscapeDataString(clubName)));
 
-        var payload = await resp.Content.ReadFromJsonAsync<List<SearchClubResult>>(_jsonOpts, ct) ?? new();
+        var json = await _eaHttpClient.GetStringAsync(uri, ct);
+        if (json is null) return null;
+
+        var payload = JsonSerializer.Deserialize<List<SearchClubResult>>(json, _jsonOpts) ?? new();
 
         // tenta casar por clubId primeiro
         var byId = payload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
@@ -160,12 +133,19 @@ public class ClubMatchService : IClubMatchService
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
         var membersTpl = _config["EAFCSettings:MembersStatsEndpoint"] ?? "/members/stats?platform=common-gen5&clubId={0}";
-        var url = $"{baseUrl.TrimEnd('/')}/{string.Format(membersTpl, clubId).TrimStart('/')}";
 
-        using var resp = await _httpClient.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        var uri = BuildUri(baseUrl, string.Format(membersTpl, clubId));
 
-        return await resp.Content.ReadFromJsonAsync<MembersStatsResponse>(_jsonOpts, ct);
+        var json = await _eaHttpClient.GetStringAsync(uri, ct);
+        if (json is null) return null;
+
+        return JsonSerializer.Deserialize<MembersStatsResponse>(json, _jsonOpts);
+    }
+
+    private static Uri BuildUri(string baseUrl, string relative)
+    {
+        var root = new Uri(baseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+        return new Uri(root, relative.TrimStart('/'));
     }
 
     private static int? ToNullableInt(string? s) => int.TryParse(s, out var v) ? v : (int?)null;
@@ -186,9 +166,6 @@ public class ClubMatchService : IClubMatchService
 
         if (match.Clubs != null && match.Clubs.Count > 0)
         {
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PostmanRuntime/7.36.0");
-            _httpClient.DefaultRequestHeaders.Connection.ParseAdd("keep-alive");
-
             var tasks = match.Clubs.Select(async kv =>
             {
                 var cid = long.Parse(kv.Key);
@@ -259,7 +236,6 @@ public class ClubMatchService : IClubMatchService
                         CrestColor = club.Details?.CustomKit?.CrestColor,
                         CrestAssetId = club.Details?.CustomKit?.CrestAssetId,
                         SelectedKitType = club.Details?.CustomKit?.SelectedKitType,
-
                     };
 
                     // Mantém o comportamento original de buscar overall/playoffs.
@@ -519,31 +495,26 @@ public class ClubMatchService : IClubMatchService
                               ?? _config["PlayoffAchievementsEndpoint"]
                               ?? "/club/playoffAchievements?platform=common-gen5&clubId={0}";
 
-            var overallUri = new Uri($"{baseUrl.TrimEnd('/')}/{string.Format(overallTpl, clubId).TrimStart('/')}");
-            var playoffsUri = new Uri($"{baseUrl.TrimEnd('/')}/{string.Format(playoffsTpl, clubId).TrimStart('/')}");
+            var overallUri = BuildUri(baseUrl, string.Format(overallTpl, clubId));
+            var playoffsUri = BuildUri(baseUrl, string.Format(playoffsTpl, clubId));
 
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("PostmanRuntime/7.36.0");
-            _httpClient.DefaultRequestHeaders.Connection.ParseAdd("keep-alive");
-
-            // Buscar em paralelo
-            var overallTask = _httpClient.GetAsync(overallUri, ct);
-            var playoffsTask = _httpClient.GetAsync(playoffsUri, ct);
+            // Buscar em paralelo usando o caller
+            var overallTask = _eaHttpClient.GetStringAsync(overallUri, ct);
+            var playoffsTask = _eaHttpClient.GetStringAsync(playoffsUri, ct);
 
             await Task.WhenAll(overallTask, playoffsTask);
 
-            using var overallResp = overallTask.Result;
-            using var playoffsResp = playoffsTask.Result;
+            var jsonOverall = overallTask.Result;
+            var jsonPlayoffs = playoffsTask.Result;
 
             // OVERALL (comportamento original)
-            if (overallResp.IsSuccessStatusCode)
+            if (!string.IsNullOrWhiteSpace(jsonOverall))
             {
-                var jsonOverall = await overallResp.Content.ReadAsStringAsync(ct);
-
                 List<OverallStats>? list = null;
-                try { list = JsonSerializer.Deserialize<List<OverallStats>>(jsonOverall, _jsonOpts); }
+                try { list = JsonSerializer.Deserialize<List<OverallStats>>(jsonOverall!, _jsonOpts); }
                 catch
                 {
-                    var one = JsonSerializer.Deserialize<OverallStats>(jsonOverall, _jsonOpts);
+                    var one = JsonSerializer.Deserialize<OverallStats>(jsonOverall!, _jsonOpts);
                     if (one != null) list = new List<OverallStats> { one };
                 }
 
@@ -589,15 +560,13 @@ public class ClubMatchService : IClubMatchService
             }
 
             // PLAYOFF ACHIEVEMENTS
-            if (playoffsResp.IsSuccessStatusCode)
+            if (!string.IsNullOrWhiteSpace(jsonPlayoffs))
             {
-                var jsonPlayoffs = await playoffsResp.Content.ReadAsStringAsync(ct);
-
                 List<PlayoffAchievement>? items = null;
-                try { items = JsonSerializer.Deserialize<List<PlayoffAchievement>>(jsonPlayoffs, _jsonOpts); }
+                try { items = JsonSerializer.Deserialize<List<PlayoffAchievement>>(jsonPlayoffs!, _jsonOpts); }
                 catch
                 {
-                    var one = JsonSerializer.Deserialize<PlayoffAchievement>(jsonPlayoffs, _jsonOpts);
+                    var one = JsonSerializer.Deserialize<PlayoffAchievement>(jsonPlayoffs!, _jsonOpts);
                     if (one != null) items = new List<PlayoffAchievement> { one };
                 }
 

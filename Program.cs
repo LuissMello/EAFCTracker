@@ -1,10 +1,12 @@
-using EAFCMatchTracker.Interfaces;
+using EAFCMatchTracker.Infrastructure.Http;
 using EAFCMatchTracker.Services;
-using Microsoft.EntityFrameworkCore;
-using System;
-using System.Globalization;   // NEW
+using EAFCMatchTracker.Services.Interfaces;
 using Microsoft.AspNetCore.Localization; // NEW
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;      // NEW
+using System;
+using System.Globalization;
+using System.Net;   // NEW
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +27,17 @@ builder.Services.AddHttpClient<ClubMatchService>((sp, client) =>
     });
 
 builder.Services.AddHostedService<ClubMatchBackgroundService>();
+
+builder.Services.AddHttpClient<IEAHttpClient, EAHttpClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(60);
+})
+.ConfigurePrimaryHttpMessageHandler(() =>
+    new HttpClientHandler
+    {
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+    }
+);
 
 builder.Services.Configure<EAFCSettings>(builder.Configuration.GetSection("EAFCSettings"));
 builder.Services.AddSingleton<IEAFCService, EAFCService>();

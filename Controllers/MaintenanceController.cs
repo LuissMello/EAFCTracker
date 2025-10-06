@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Net;
 using System.Text.Json;
+using EAFCMatchTracker.Infrastructure.Http;
 
 namespace EAFCMatchTracker.Controllers;
 
@@ -10,22 +12,19 @@ public class MaintenanceController : ControllerBase
 {
     private readonly EAFCContext _db;
     private readonly IConfiguration _config;
-    private readonly HttpClient _http;
+    private readonly IEAHttpClient _eaHttpClient;
 
-    public MaintenanceController(EAFCContext db, IConfiguration config, HttpClient http)
+    public MaintenanceController(EAFCContext db, IConfiguration config, EAHttpClient backend)
     {
         _db = db;
         _config = config;
-        _http = http;
+        _eaHttpClient = backend;
     }
 
     // =========================================================
-    // 1) REFRESH OVERALL & PLAYOFFS (existente)
+    // 1) REFRESH OVERALL & PLAYOFFS
     // =========================================================
 
-    /// <summary>
-    /// Reprocessa clubs conhecidos (presentes em MatchClubs), atualizando OverallStats e PlayoffAchievements 1:N.
-    /// </summary>
     [HttpPost("clubs/overall/refresh")]
     public async Task<IActionResult> RefreshClubsOverall(CancellationToken ct)
     {
@@ -40,14 +39,10 @@ public class MaintenanceController : ControllerBase
         int playoffsInserted = 0;
         int playoffsUpdated = 0;
 
-        // headers uma vez só
-        EnsureDefaultHeaders(_http);
-
         foreach (var clubId in clubIds)
         {
             processed++;
 
-            // busca overall e playoffs em paralelo
             var overallTask = FetchOverallDtoAsync(clubId, ct);
             var playoffTask = FetchPlayoffAchievementsAsync(clubId, ct);
 
@@ -56,7 +51,6 @@ public class MaintenanceController : ControllerBase
             var overallDto = overallTask.Result;
             var playoffDtos = playoffTask.Result;
 
-            // ----- Overall upsert -----
             if (overallDto is not null)
             {
                 var existing = await _db.OverallStats.FirstOrDefaultAsync(o => o.ClubId == clubId, ct);
@@ -74,7 +68,6 @@ public class MaintenanceController : ControllerBase
                 }
             }
 
-            // ----- Playoff achievements upsert 1:N -----
             if (playoffDtos is not null && playoffDtos.Count > 0)
             {
                 var (ins, upd) = await UpsertPlayoffAchievementsAsync(clubId, playoffDtos, ct);
@@ -83,9 +76,7 @@ public class MaintenanceController : ControllerBase
             }
 
             if (_db.ChangeTracker.HasChanges())
-            {
                 await _db.SaveChangesAsync(ct);
-            }
         }
 
         return Ok(new
@@ -98,21 +89,14 @@ public class MaintenanceController : ControllerBase
     }
 
     // =========================================================
-    // 2) NOVO: ATUALIZAR currentDivision via SearchClubsEndpoint
+    // 2) ATUALIZAR currentDivision via SearchClubsEndpoint
     // =========================================================
 
-    /// <summary>
-    /// Atualiza a divisão atual (currentDivision) do clube informado.
-    /// Se o nome não for passado, tenta descobrir pelo nome mais recente em MatchClubs.Details.Name.
-    /// </summary>
     [HttpPost("club/{clubId:long}/division/refresh")]
     public async Task<IActionResult> RefreshClubCurrentDivision(long clubId, [FromQuery] string? name, CancellationToken ct)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-        EnsureDefaultHeaders(_http);
-
-        // Se não veio name, pega o mais recente do banco
         if (string.IsNullOrWhiteSpace(name))
         {
             name = await _db.MatchClubs
@@ -130,19 +114,17 @@ public class MaintenanceController : ControllerBase
         if (!div.HasValue)
             return NotFound(new { message = "Divisão atual não encontrada na EA para este clube/nome." });
 
-        // Atualiza na última linha de detalhes (ou em todas, se preferir)
-        var detailsRows = await _db.OverallStats
-                                   .Where(mc => mc.ClubId == clubId)
-                                   .Distinct()
-                                   .ToListAsync(ct);
+        var rows = await _db.OverallStats
+                            .Where(mc => mc.ClubId == clubId)
+                            .ToListAsync(ct);
 
-        if (detailsRows.Count == 0)
-            return NotFound(new { message = "Nenhum ClubDetails encontrado para este clube." });
+        if (rows.Count == 0)
+            return NotFound(new { message = "Nenhum OverallStats encontrado para este clube." });
 
-        foreach (var d in detailsRows)
+        foreach (var d in rows)
             d.CurrentDivision = div.Value;
 
-        _db.OverallStats.UpdateRange(detailsRows);
+        _db.OverallStats.UpdateRange(rows);
         await _db.SaveChangesAsync(ct);
 
         return Ok(new
@@ -150,37 +132,28 @@ public class MaintenanceController : ControllerBase
             clubId,
             clubName = name,
             currentDivision = div.Value,
-            updatedRows = detailsRows.Count
+            updatedRows = rows.Count
         });
     }
 
     // =========================================================
-    // 3) NOVO: ENRIQUECER MatchPlayers via MembersStatsEndpoint
+    // 3) ENRIQUECER MatchPlayers via MembersStatsEndpoint
     // =========================================================
 
-    /// <summary>
-    /// Busca /members/stats na EA e grava ProOverall, ProOverallStr, ProHeight, ProName
-    /// em MatchPlayerEntity para TODOS os jogadores do clube informado,
-    /// casando por Player.Playername (case-insensitive).
-    /// </summary>
     [HttpPost("club/{clubId:long}/members/enrich")]
     public async Task<IActionResult> EnrichMatchPlayersWithMembers(long clubId, CancellationToken ct)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-        EnsureDefaultHeaders(_http);
-
         var members = await FetchMembersStatsAsync(clubId, ct);
         if (members is null || members.members.Count == 0)
             return NotFound(new { message = "Nenhum membro retornado pela EA para este clubId." });
 
-        // index por nome (case-insensitive)
         var byName = members.members
                             .Where(m => !string.IsNullOrWhiteSpace(m.name))
                             .GroupBy(m => m.name.Trim(), StringComparer.OrdinalIgnoreCase)
                             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-        // carrega todos MatchPlayers do clube (inclui Player p/ nome)
         var rows = await _db.MatchPlayers
                             .Include(mp => mp.Player)
                             .Where(mp => mp.ClubId == clubId && mp.Player != null)
@@ -199,7 +172,6 @@ public class MaintenanceController : ControllerBase
                 var newStr = string.IsNullOrWhiteSpace(mm.proOverallStr) ? null : mm.proOverallStr;
                 var newName = string.IsNullOrWhiteSpace(mm.proName) ? null : mm.proName;
 
-                // Atualiza apenas se mudou ou está vazio
                 bool anyChange =
                     mp.ProOverall != newOverall ||
                     mp.ProHeight != newHeight ||
@@ -229,19 +201,14 @@ public class MaintenanceController : ControllerBase
     }
 
     // =========================================================
-    // 4) NOVO: endpoint combinado (divisão + membros)
+    // 4) endpoint combinado (divisão + membros)
     // =========================================================
 
-    /// <summary>
-    /// Atualiza a divisão atual e enriquece match players do clube em uma só chamada.
-    /// Querystring "name" opcional para forçar o nome do clube.
-    /// </summary>
     [HttpPost("club/{clubId:long}/refresh-external")]
     public async Task<IActionResult> RefreshClubExternal(long clubId, [FromQuery] string? name, CancellationToken ct)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-        // faz as duas operações em sequência
         var divResult = await RefreshClubCurrentDivision(clubId, name, ct) as OkObjectResult;
         var enrichResult = await EnrichMatchPlayersWithMembers(clubId, ct) as OkObjectResult;
 
@@ -252,15 +219,15 @@ public class MaintenanceController : ControllerBase
         });
     }
 
+    // =========================================================
+    // 5) Atualizar divisões dos adversários
+    // =========================================================
+
     [HttpPost("club/{clubId:long}/opponents/division/refresh")]
     public async Task<IActionResult> RefreshOpponentsCurrentDivision(long clubId, CancellationToken ct)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-        EnsureDefaultHeaders(_http);
-
-        // Descobrir adversários: todos os MatchClubs que compartilham o mesmo MatchId,
-        // exceto o próprio clubId.
         var opponents = await
             (from mc in _db.MatchClubs.AsNoTracking()
              join my in _db.MatchClubs.AsNoTracking() on mc.MatchId equals my.MatchId
@@ -276,7 +243,6 @@ public class MaintenanceController : ControllerBase
         if (opponents.Count == 0)
             return Ok(new { clubId, opponentsFound = 0, updated = 0, detailsUpdated = 0 });
 
-        // Consolidar por adversário (pegar o nome não-nulo mais recente disponível)
         var grouped = opponents
             .GroupBy(o => o.OpponentId)
             .Select(g =>
@@ -295,7 +261,6 @@ public class MaintenanceController : ControllerBase
 
         foreach (var opp in grouped)
         {
-            // Se não tivermos nome em nenhuma partida, tenta buscar um nome em qualquer detalhe salvo.
             var name = opp.Name ?? await _db.MatchClubs
                                             .AsNoTracking()
                                             .Where(x => x.ClubId == opp.OpponentId && x.Details != null && x.Details.Name != null)
@@ -316,15 +281,13 @@ public class MaintenanceController : ControllerBase
                 continue;
             }
 
-            // Atualiza todas as linhas de detalhes desse adversário
             var detailsRows = await _db.OverallStats
                                        .Where(mc => mc.ClubId == opp.OpponentId)
-                                       .Distinct()
                                        .ToListAsync(ct);
 
             if (detailsRows.Count == 0)
             {
-                results.Add(new { opponentId = opp.OpponentId, name, currentDivision = div.Value, status = "no_details_rows" });
+                results.Add(new { opponentId = opp.OpponentId, name, currentDivision = div.Value, status = "no_overall_rows" });
                 continue;
             }
 
@@ -351,7 +314,7 @@ public class MaintenanceController : ControllerBase
         });
     }
 
-    // --------- FETCHERS EXISTENTES ---------
+    // --------- FETCHERS (via IBackendCaller) ---------
 
     private async Task<OverallStats?> FetchOverallDtoAsync(long clubId, CancellationToken ct)
     {
@@ -360,12 +323,12 @@ public class MaintenanceController : ControllerBase
                           ?? _config["OverallStatsEndpoint"]
                           ?? "/clubs/overallStats?platform=common-gen5&clubIds={0}";
 
-        var uri = new Uri($"{baseUrl!.TrimEnd('/')}/{string.Format(endpointTpl, clubId).TrimStart('/')}");
+        EnsureBaseUrl(baseUrl);
+        var uri = BuildUri(baseUrl!, string.Format(endpointTpl, clubId));
 
-        var resp = await _http.GetAsync(uri, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        var json = await _eaHttpClient.GetStringAsync(uri, ct);
+        if (json is null) return null;
 
-        var json = await resp.Content.ReadAsStringAsync(ct);
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
         try
@@ -389,15 +352,14 @@ public class MaintenanceController : ControllerBase
                           ?? _config["PlayoffAchievementsEndpoint"]
                           ?? "/club/playoffAchievements?platform=common-gen5&clubId={0}";
 
-        var uri = new Uri($"{baseUrl!.TrimEnd('/')}/{string.Format(endpointTpl, clubId).TrimStart('/')}");
+        EnsureBaseUrl(baseUrl);
+        var uri = BuildUri(baseUrl!, string.Format(endpointTpl, clubId));
 
-        var resp = await _http.GetAsync(uri, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        var json = await _eaHttpClient.GetStringAsync(uri, ct);
+        if (json is null) return null;
 
-        var json = await resp.Content.ReadAsStringAsync(ct);
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-        // Pode ser lista ou item único
         try
         {
             var list = System.Text.Json.JsonSerializer.Deserialize<List<PlayoffAchievement>>(json, options);
@@ -444,27 +406,28 @@ public class MaintenanceController : ControllerBase
 
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
-        var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
+        var baseUrl = _config["EAFCSettings:BaseUrl"];
         var searchTpl = _config["EAFCSettings:SearchClubsEndpoint"]
                         ?? "/allTimeLeaderboard/search?platform=common-gen5&clubName={0}";
-        var url = $"{baseUrl.TrimEnd('/')}/{string.Format(searchTpl, Uri.EscapeDataString(clubName)).TrimStart('/')}";
 
-        var resp = await _http.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        EnsureBaseUrl(baseUrl);
+        var uri = BuildUri(baseUrl!, string.Format(searchTpl, Uri.EscapeDataString(clubName)));
+
+        var json = await _eaHttpClient.GetStringAsync(uri, ct);
+        if (json is null) return null;
 
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         List<SearchClubResult> payload;
 
         try
         {
-            payload = System.Text.Json.JsonSerializer.Deserialize<List<SearchClubResult>>(await resp.Content.ReadAsStringAsync(ct), options) ?? new();
+            payload = System.Text.Json.JsonSerializer.Deserialize<List<SearchClubResult>>(json, options) ?? new();
         }
         catch
         {
             payload = new();
         }
 
-        // tenta casar por clubId primeiro
         var byId = payload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
         var pick = byId ?? payload.FirstOrDefault();
         if (pick == null) return null;
@@ -474,18 +437,20 @@ public class MaintenanceController : ControllerBase
 
     private async Task<MembersStatsResponse?> FetchMembersStatsAsync(long clubId, CancellationToken ct)
     {
-        var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
+        var baseUrl = _config["EAFCSettings:BaseUrl"];
         var membersTpl = _config["EAFCSettings:MembersStatsEndpoint"]
                          ?? "/members/stats?platform=common-gen5&clubId={0}";
-        var url = $"{baseUrl.TrimEnd('/')}/{string.Format(membersTpl, clubId).TrimStart('/')}";
 
-        var resp = await _http.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode) return null;
+        EnsureBaseUrl(baseUrl);
+        var uri = BuildUri(baseUrl!, string.Format(membersTpl, clubId));
+
+        var json = await _eaHttpClient.GetStringAsync(uri, ct);
+        if (json is null) return null;
 
         var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<MembersStatsResponse>(await resp.Content.ReadAsStringAsync(ct), options);
+            return System.Text.Json.JsonSerializer.Deserialize<MembersStatsResponse>(json, options);
         }
         catch
         {
@@ -502,7 +467,6 @@ public class MaintenanceController : ControllerBase
     {
         int inserted = 0, updated = 0;
 
-        // carrega existentes do clube
         var existing = await _db.PlayoffAchievements
                                 .Where(p => p.ClubId == clubId)
                                 .ToListAsync(ct);
@@ -513,11 +477,10 @@ public class MaintenanceController : ControllerBase
         foreach (var it in items)
         {
             if (string.IsNullOrWhiteSpace(it.SeasonId))
-                continue; // precisa de SeasonId para unicidade
+                continue;
 
             if (bySeason.TryGetValue(it.SeasonId, out var row))
             {
-                // update
                 row.SeasonName = it.SeasonName;
                 row.BestDivision = it.BestDivision;
                 row.BestFinishGroup = it.BestFinishGroup;
@@ -527,7 +490,6 @@ public class MaintenanceController : ControllerBase
             }
             else
             {
-                // insert
                 var entity = new PlayoffAchievementEntity
                 {
                     ClubId = clubId,
@@ -573,14 +535,19 @@ public class MaintenanceController : ControllerBase
 
     // --------- UTILS ---------
 
-    private static void EnsureDefaultHeaders(HttpClient http)
+    private static void EnsureBaseUrl(string? baseUrl)
     {
-        // evita acumular valores duplicados no User-Agent/Connection em loops
-        if (!http.DefaultRequestHeaders.UserAgent.Any())
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("PostmanRuntime/7.36.0");
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            throw new InvalidOperationException("EAFCSettings:BaseUrl não configurado.");
+    }
 
-        if (!http.DefaultRequestHeaders.Connection.Any())
-            http.DefaultRequestHeaders.Connection.ParseAdd("keep-alive");
+    private static Uri BuildUri(string baseUrl, string relativeOrAbsolute)
+    {
+        var baseUri = new Uri(baseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+        if (Uri.TryCreate(relativeOrAbsolute, UriKind.Absolute, out var abs))
+            return abs;
+
+        return new Uri(baseUri, relativeOrAbsolute.TrimStart('/'));
     }
 
     private static int? ToNullableInt(string? s) => int.TryParse(s, out var v) ? v : (int?)null;
