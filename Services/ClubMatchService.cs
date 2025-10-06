@@ -66,7 +66,7 @@ public class ClubMatchService : IClubMatchService
         if (string.IsNullOrWhiteSpace(endpointTemplate))
             throw new InvalidOperationException("EAFCSettings:ClubMatchesEndpoint não configurado.");
 
-        var endpoint = new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), string.Format(endpointTemplate, clubId, matchType));
+        var endpoint = BuildUri(baseUrl, string.Format(endpointTemplate, clubId, matchType));
 
         var json = await _eaHttpClient.GetStringAsync(endpoint, ct);
         if (json is null) return new List<Match>();
