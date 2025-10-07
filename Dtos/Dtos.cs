@@ -282,6 +282,7 @@ public sealed class ClubDetailsDto
 
 public sealed class ClubMatchSummaryDto
 {
+    public bool Disconnected { get; set; }
     public short RedCards { get; set; }
     public bool HadHatTrick { get; set; }
 

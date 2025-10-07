@@ -332,6 +332,7 @@ public class ClubsController : ControllerBase
         var matches = await q
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+            .AsNoTracking()
             .OrderByDescending(m => m.Timestamp)
             .ToListAsync(ct);
 
@@ -380,6 +381,64 @@ public class ClubsController : ControllerBase
 
         return Ok(result);
     }
+
+    private static ClubMatchSummaryDto BuildClubSummaryNames(MatchEntity match, long cid, short redCards, long? motmId)
+    {
+        static bool IsGk(string? pos)
+        {
+            if (string.IsNullOrWhiteSpace(pos)) return false;
+            var p = pos.Trim().ToUpperInvariant();
+            return p is "GK" or "GOL" or "GOALKEEPER" or "GOLEIRO";
+        }
+
+        var clubPlayers = match.MatchPlayers.Where(mp => mp.ClubId == cid).ToList();
+
+        var hatTrickNames = clubPlayers
+            .GroupBy(mp => mp.PlayerEntityId)
+            .Select(g => new
+            {
+                Goals = g.Sum(x => (int)x.Goals),
+                Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
+            })
+            .Where(x => x.Goals >= 3)
+            .Select(x => x.Name)
+            .ToList();
+
+        var gkName = clubPlayers
+            .Where(mp => IsGk(mp.Pos))
+            .GroupBy(mp => mp.PlayerEntityId)
+            .Select(g => new
+            {
+                CleanSheetsGk = g.Sum(x => (int)x.Cleansheetsgk),
+                Saves = g.Sum(x => (int)x.Saves),
+                Rating = g.Max(x => x.Rating),
+                Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
+            })
+            .OrderByDescending(x => x.CleanSheetsGk)
+            .ThenByDescending(x => x.Saves)
+            .ThenByDescending(x => x.Rating)
+            .ThenBy(x => x.Name)
+            .Select(x => x.Name)
+            .FirstOrDefault();
+
+        string? motmName = null;
+        if (motmId.HasValue && clubPlayers.Any(mp => mp.PlayerEntityId == motmId.Value))
+            motmName = clubPlayers.Where(mp => mp.PlayerEntityId == motmId.Value).Select(mp => mp.Player?.Playername).FirstOrDefault();
+
+        var dnfWinner = match.Clubs.FirstOrDefault(c => c.WinnerByDnf);
+        var disconnected = dnfWinner != null && dnfWinner.ClubId != cid;
+
+        return new ClubMatchSummaryDto
+        {
+            RedCards = redCards,
+            HadHatTrick = hatTrickNames.Count > 0,
+            HatTrickPlayerNames = hatTrickNames,
+            GoalkeeperPlayerName = gkName,
+            ManOfTheMatchPlayerName = motmName,
+            Disconnected = disconnected
+        };
+    }
+
 
     [HttpDelete("{clubId:long}/matches")]
     public async Task<IActionResult> DeleteMatchesByClub(long clubId, CancellationToken ct)
@@ -579,59 +638,6 @@ public class ClubsController : ControllerBase
             .FirstOrDefault();
 
         return best?.PlayerEntityId;
-    }
-
-    private static ClubMatchSummaryDto BuildClubSummaryNames(MatchEntity match, long cid, short redCards, long? motmId)
-    {
-        static bool IsGk(string? pos)
-        {
-            if (string.IsNullOrWhiteSpace(pos)) return false;
-            var p = pos.Trim().ToUpperInvariant();
-            return p is "GK" or "GOL" or "GOALKEEPER" or "GOLEIRO";
-        }
-
-        var clubPlayers = match.MatchPlayers.Where(mp => mp.ClubId == cid).ToList();
-
-        var hatTrickNames = clubPlayers
-            .GroupBy(mp => mp.PlayerEntityId)
-            .Select(g => new
-            {
-                Goals = g.Sum(x => (int)x.Goals),
-                Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
-            })
-            .Where(x => x.Goals >= 3)
-            .Select(x => x.Name)
-            .ToList();
-
-        var gkName = clubPlayers
-            .Where(mp => IsGk(mp.Pos))
-            .GroupBy(mp => mp.PlayerEntityId)
-            .Select(g => new
-            {
-                CleanSheetsGk = g.Sum(x => (int)x.Cleansheetsgk),
-                Saves = g.Sum(x => (int)x.Saves),
-                Rating = g.Max(x => x.Rating),
-                Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
-            })
-            .OrderByDescending(x => x.CleanSheetsGk)
-            .ThenByDescending(x => x.Saves)
-            .ThenByDescending(x => x.Rating)
-            .ThenBy(x => x.Name)
-            .Select(x => x.Name)
-            .FirstOrDefault();
-
-        string? motmName = null;
-        if (motmId.HasValue && clubPlayers.Any(mp => mp.PlayerEntityId == motmId.Value))
-            motmName = clubPlayers.Where(mp => mp.PlayerEntityId == motmId.Value).Select(mp => mp.Player?.Playername).FirstOrDefault();
-
-        return new ClubMatchSummaryDto
-        {
-            RedCards = redCards,
-            HadHatTrick = hatTrickNames.Count > 0,
-            HatTrickPlayerNames = hatTrickNames,
-            GoalkeeperPlayerName = gkName,
-            ManOfTheMatchPlayerName = motmName
-        };
     }
 
     private static List<long> ParseClubIdsFromConfig(IConfiguration config)
