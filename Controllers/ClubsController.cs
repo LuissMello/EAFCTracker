@@ -313,7 +313,11 @@ public class ClubsController : ControllerBase
     }
 
     [HttpGet("{clubId:long}/matches/results")]
-    public async Task<ActionResult<List<MatchResultDto>>> GetMatchResults(long clubId, [FromQuery] MatchType matchType = MatchType.All, [FromQuery] int? opponentCount = null, CancellationToken ct = default)
+    public async Task<ActionResult<List<MatchResultDto>>> GetMatchResults(
+        long clubId,
+        [FromQuery] MatchType matchType = MatchType.All,
+        [FromQuery] int? opponentCount = null,
+        CancellationToken ct = default)
     {
         if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
@@ -321,7 +325,8 @@ public class ClubsController : ControllerBase
         if (opponentCount.HasValue)
         {
             opponentCount = ClampOpp(opponentCount.Value);
-            if (opponentCount < MinOpponentPlayers || opponentCount > MaxOpponentPlayers) return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
+            if (opponentCount < MinOpponentPlayers || opponentCount > MaxOpponentPlayers)
+                return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
         }
 
         var q = _db.Matches.AsNoTracking().Where(m => m.Clubs.Any(c => c.ClubId == clubId));
@@ -335,6 +340,20 @@ public class ClubsController : ControllerBase
             .AsNoTracking()
             .OrderByDescending(m => m.Timestamp)
             .ToListAsync(ct);
+
+        // === Prefetch das divisões atuais de TODOS os clubes envolvidos nessa página ===
+        var allClubIds = matches
+            .SelectMany(m => m.Clubs.Select(c => c.ClubId))
+            .Distinct()
+            .ToList();
+
+        var divByClub = await _db.OverallStats
+            .AsNoTracking()
+            .Where(os => allClubIds.Contains(os.ClubId))
+            .Select(os => new { os.ClubId, os.CurrentDivision })
+            .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct);
+
+        // ==============================================================================
 
         var result = new List<MatchResultDto>(matches.Count);
 
@@ -358,29 +377,41 @@ public class ClubsController : ControllerBase
             {
                 MatchId = match.MatchId,
                 Timestamp = match.Timestamp,
+
                 ClubAName = a.Details?.Name ?? $"Clube {a.ClubId}",
                 ClubAGoals = a.Goals,
                 ClubARedCards = redA,
                 ClubAPlayerCount = cntA,
                 ClubADetails = a.Details == null ? null : ToDetailsDto(a.Details, a.ClubId),
                 ClubASummary = BuildClubSummaryNames(match, a.ClubId, redA, motmId),
+
                 ClubBName = b.Details?.Name ?? $"Clube {b.ClubId}",
                 ClubBGoals = b.Goals,
                 ClubBRedCards = redB,
                 ClubBPlayerCount = cntB,
                 ClubBDetails = b.Details == null ? null : ToDetailsDto(b.Details, b.ClubId),
                 ClubBSummary = BuildClubSummaryNames(match, b.ClubId, redB, motmId),
+
                 ResultText = $"{a.Details?.Name ?? "Clube A"} {a.Goals} x {b.Goals} {b.Details?.Name ?? "Clube B"}"
             };
 
-            dto.ClubADetails.Team = a.Team.ToString();
-            dto.ClubBDetails.Team = b.Team.ToString();
+            // Preenche Team (já fazia)
+            if (dto.ClubADetails != null) dto.ClubADetails.Team = a.Team.ToString();
+            if (dto.ClubBDetails != null) dto.ClubBDetails.Team = b.Team.ToString();
+
+            // === Preenche CurrentDivision a partir do dicionário ===
+            if (dto.ClubADetails != null && divByClub.TryGetValue(a.ClubId, out var divA))
+                dto.ClubADetails.CurrentDivision = divA;
+
+            if (dto.ClubBDetails != null && divByClub.TryGetValue(b.ClubId, out var divB))
+                dto.ClubBDetails.CurrentDivision = divB;
 
             result.Add(dto);
         }
 
         return Ok(result);
     }
+
 
     private static ClubMatchSummaryDto BuildClubSummaryNames(MatchEntity match, long cid, short redCards, long? motmId)
     {

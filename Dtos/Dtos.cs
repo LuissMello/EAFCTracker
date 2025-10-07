@@ -278,6 +278,7 @@ public sealed class ClubDetailsDto
     public string? CrestAssetId { get; set; }
     public string? SelectedKitType { get; set; }
     public string? Team { get; set; }
+    public int? CurrentDivision { get; set; }
 }
 
 public sealed class ClubMatchSummaryDto
