@@ -3,6 +3,7 @@ using EAFCMatchTracker.Services;
 using EAFCMatchTracker.Services.Interfaces;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using System.Globalization;
 using System.Net;
@@ -67,20 +68,30 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
     };
 });
 
+var useInMemory = builder.Configuration.GetValue<bool>("EAFCSettings:UseInMemoryDb");
+
 builder.Services.AddDbContext<EAFCContext>(options =>
 {
     var connectionString = builder.Configuration.GetConnectionString("Default");
 
-    options.UseNpgsql(connectionString, npgsqlOptions =>
+    if (useInMemory)
     {
-        npgsqlOptions.EnableRetryOnFailure(
-            maxRetryCount: 5,
-            maxRetryDelay: TimeSpan.FromSeconds(10),
-            errorCodesToAdd: null);
-    });
+        options.UseInMemoryDatabase("EAFC_TestDB");
+        options.ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning));
+    }
+    else
+    {
+        options.UseNpgsql(connectionString, npgsqlOptions =>
+        {
+            npgsqlOptions.EnableRetryOnFailure(
+                maxRetryCount: 5,
+                maxRetryDelay: TimeSpan.FromSeconds(10),
+                errorCodesToAdd: null);
+        });
 
-    options.EnableSensitiveDataLogging();
-    options.LogTo(Console.WriteLine, LogLevel.Information);
+        options.EnableSensitiveDataLogging();
+        options.LogTo(Console.WriteLine, LogLevel.Information);
+    }
 });
 
 builder.Services.AddScoped<IClubMatchService, ClubMatchService>();
@@ -118,14 +129,18 @@ AppDomain.CurrentDomain.FirstChanceException += (sender, eventArgs) =>
     }
 };
 
-using (var scope = app.Services.CreateScope())
+
+if (!useInMemory)
 {
-    var services = scope.ServiceProvider;
+    using (var scope = app.Services.CreateScope())
+    {
+        var services = scope.ServiceProvider;
 
-    await WaitForDatabaseAsync(services);
+        await WaitForDatabaseAsync(services);
 
-    var db = services.GetRequiredService<EAFCContext>();
-    db.Database.Migrate();
+        var db = services.GetRequiredService<EAFCContext>();
+        db.Database.Migrate();
+    }
 }
 
 app.UseSwagger();
