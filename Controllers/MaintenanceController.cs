@@ -279,7 +279,7 @@ public class MaintenanceController : ControllerBase
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar divisões dos oponentes.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar divisões dos oponentes.", details = ex.Message, stackTrace = ex.StackTrace });
         }
     }   
 
