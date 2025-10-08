@@ -229,37 +229,44 @@ namespace EAFCMatchTracker.Dtos
 
 
         public static (MatchStatisticsDto Overall, List<PlayerStatisticsDto> Players, List<ClubStatisticsDto> Clubs)
-            BuildLimitedForClub(long clubId, IReadOnlyList<MatchEntity> matches)
+    BuildLimitedForClub(long clubId, IReadOnlyList<MatchEntity> matches)
         {
+            // Todos os jogadores do clube neste conjunto de partidas
             var allPlayers = matches.SelectMany(m => m.MatchPlayers)
                                     .Where(e => e.Player.ClubId == clubId)
                                     .ToList();
 
-            if (allPlayers.Count == 0)
-                return (new MatchStatisticsDto(), new List<PlayerStatisticsDto>(), new List<ClubStatisticsDto>());
+            // Apenas conectados (NOVO)
+            var activePlayers = allPlayers.Where(p => !p.Disconnected).ToList();
 
+            // Sides do clube (para W/L/D e gols contra por partida)
             var clubSides = matches.SelectMany(m => m.Clubs)
                                    .Where(c => c.ClubId == clubId)
                                    .ToList();
 
+            // Se não houver nenhum jogador (ou todos desconectados), ainda retornamos stats do clube
+            // com somatórios de jogador zerados.
             int matchesPlayedByClub = clubSides.Count;
             int winsCount = clubSides.Count(c => c.Goals > c.GoalsAgainst);
             int lossesCount = clubSides.Count(c => c.Goals < c.GoalsAgainst);
             int drawsCount = matchesPlayedByClub - winsCount - lossesCount;
             int cleanSheetsMatches = clubSides.Count(c => c.GoalsAgainst == 0);
 
-            int momMatches = matches.Count(m => m.MatchPlayers.Any(mp => mp.Player.ClubId == clubId && mp.Mom));
+            // Contar MOM apenas se o jogador do clube NÃO estava desconectado (NOVO)
+            int momMatches = matches.Count(m =>
+                m.MatchPlayers.Any(mp => mp.Player.ClubId == clubId && !mp.Disconnected && mp.Mom));
 
-            var playersStats = BuildPerPlayer(allPlayers);
+            // Stats por jogador (usa apenas conectados)
+            var playersStats = BuildPerPlayer(activePlayers);
 
-            int totalShots = allPlayers.Sum(p => p.Shots);
-            int totalPassesMade = allPlayers.Sum(p => p.Passesmade);
-            int totalPassAttempts = allPlayers.Sum(p => p.Passattempts);
-            int totalTacklesMade = allPlayers.Sum(p => p.Tacklesmade);
-            int totalTackleAttempts = allPlayers.Sum(p => p.Tackleattempts);
-            int totalGoals = allPlayers.Sum(p => p.Goals);
-
-            int totalGoalsConceded = clubSides.Sum(c => c.GoalsAgainst);
+            // Somatórios só com conectados (NOVO)
+            int totalShots = activePlayers.Sum(p => p.Shots);
+            int totalPassesMade = activePlayers.Sum(p => p.Passesmade);
+            int totalPassAttempts = activePlayers.Sum(p => p.Passattempts);
+            int totalTacklesMade = activePlayers.Sum(p => p.Tacklesmade);
+            int totalTackleAttempts = activePlayers.Sum(p => p.Tackleattempts);
+            int totalGoals = activePlayers.Sum(p => p.Goals);
+            int totalGoalsConceded = clubSides.Sum(c => c.GoalsAgainst); // nível de clube, mantém
 
             int distinctPlayersCount = playersStats.Count;
 
@@ -268,41 +275,41 @@ namespace EAFCMatchTracker.Dtos
             string? crestAssetId = firstSide?.Details?.CrestAssetId;
 
             var clubsStats = new List<ClubStatisticsDto>
-            {
-                new()
-                {
-                    ClubId = (int)clubId,
-                    ClubName = clubName,
-                    ClubCrestAssetId = crestAssetId,
-                    MatchesPlayed = matchesPlayedByClub,
+    {
+        new()
+        {
+            ClubId = (int)clubId,
+            ClubName = clubName,
+            ClubCrestAssetId = crestAssetId,
+            MatchesPlayed = matchesPlayedByClub,
 
-                    TotalGoals = totalGoals,
-                    TotalGoalsConceded = totalGoalsConceded,
+            TotalGoals = totalGoals,
+            TotalGoalsConceded = totalGoalsConceded,
 
-                    TotalAssists = allPlayers.Sum(p => p.Assists),
-                    TotalShots = totalShots,
-                    TotalPassesMade = totalPassesMade,
-                    TotalPassAttempts = totalPassAttempts,
-                    TotalTacklesMade = totalTacklesMade,
-                    TotalTackleAttempts = totalTackleAttempts,
+            TotalAssists = activePlayers.Sum(p => p.Assists),
+            TotalShots = totalShots,
+            TotalPassesMade = totalPassesMade,
+            TotalPassAttempts = totalPassAttempts,
+            TotalTacklesMade = totalTacklesMade,
+            TotalTackleAttempts = totalTackleAttempts,
 
-                    TotalWins = winsCount,
-                    TotalLosses = lossesCount,
-                    TotalDraws = drawsCount,
+            TotalWins = winsCount,
+            TotalLosses = lossesCount,
+            TotalDraws = drawsCount,
 
-                    TotalCleanSheets = cleanSheetsMatches,
-                    TotalRedCards = allPlayers.Sum(p => p.Redcards),
-                    TotalSaves = allPlayers.Sum(p => p.Saves),
-                    TotalMom = momMatches,
+            TotalCleanSheets = cleanSheetsMatches,
+            TotalRedCards = activePlayers.Sum(p => p.Redcards),
+            TotalSaves = activePlayers.Sum(p => p.Saves),
+            TotalMom = momMatches,
 
-                    AvgRating = allPlayers.Any() ? allPlayers.Average(p => p.Rating) : 0,
+            AvgRating = activePlayers.Any() ? activePlayers.Average(p => p.Rating) : 0,
 
-                    WinPercent = matchesPlayedByClub > 0 ? winsCount * 100.0 / matchesPlayedByClub : 0,
-                    PassAccuracyPercent = totalPassAttempts > 0 ? totalPassesMade * 100.0 / totalPassAttempts : 0,
-                    TackleSuccessPercent = totalTackleAttempts > 0 ? totalTacklesMade * 100.0 / totalTackleAttempts : 0,
-                    GoalAccuracyPercent = totalShots > 0 ? totalGoals * 100.0 / totalShots : 0
-                }
-            };
+            WinPercent = matchesPlayedByClub > 0 ? winsCount * 100.0 / matchesPlayedByClub : 0,
+            PassAccuracyPercent = totalPassAttempts > 0 ? totalPassesMade * 100.0 / totalPassAttempts : 0,
+            TackleSuccessPercent = totalTackleAttempts > 0 ? totalTacklesMade * 100.0 / totalTackleAttempts : 0,
+            GoalAccuracyPercent = totalShots > 0 ? totalGoals * 100.0 / totalShots : 0
+        }
+    };
 
             var overall = new MatchStatisticsDto
             {
@@ -317,7 +324,7 @@ namespace EAFCMatchTracker.Dtos
                 TotalTacklesMade = playersStats.Sum(p => p.TotalTacklesMade),
                 TotalTackleAttempts = totalTackleAttempts,
 
-                TotalRating = allPlayers.Sum(p => p.Rating),
+                TotalRating = activePlayers.Sum(p => p.Rating),
 
                 TotalWins = winsCount,
                 TotalLosses = lossesCount,
@@ -343,6 +350,7 @@ namespace EAFCMatchTracker.Dtos
 
             return (overall, playersStats, clubsStats);
         }
+
 
         public static List<ClubOverallStatsDto> BuildClubsOverall(IEnumerable<OverallStatsEntity> entities)
         {
