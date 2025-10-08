@@ -601,5 +601,156 @@ public class ClubsController : ControllerBase
         }
     }
 
-    // ... restante dos métodos utilitários permanece igual ...
+    private IQueryable<MatchEntity> BaseClubMatchesQuery(long clubId) =>
+    _db.Matches
+       .AsNoTracking()
+       .Include(m => m.Clubs.Where(c => c.ClubId == clubId)).ThenInclude(c => c.Details)
+       .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+       .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
+
+    private static IQueryable<MatchEntity> ApplyOpponentFilter(IQueryable<MatchEntity> q, long clubId, int? opponentCount)
+    {
+        if (!opponentCount.HasValue) return q;
+        var oc = opponentCount.Value;
+        return q.Where(m =>
+            m.MatchPlayers
+             .Where(mp => mp.Player.ClubId != clubId)
+             .Select(mp => mp.PlayerEntityId)
+             .Distinct()
+             .Count() == oc);
+    }
+
+    private static ClubDetailsDto ToDetailsDto(ClubDetailsEntity d, long clubId) =>
+        new()
+        {
+            Name = d.Name ?? $"Clube {clubId}",
+            ClubId = clubId,
+            RegionId = d.RegionId,
+            TeamId = d.TeamId,
+            StadName = d.StadName,
+            KitId = d.KitId,
+            CustomKitId = d.CustomKitId,
+            CustomAwayKitId = d.CustomAwayKitId,
+            CustomThirdKitId = d.CustomThirdKitId,
+            CustomKeeperKitId = d.CustomKeeperKitId,
+            KitColor1 = d.KitColor1,
+            KitColor2 = d.KitColor2,
+            KitColor3 = d.KitColor3,
+            KitColor4 = d.KitColor4,
+            KitAColor1 = d.KitAColor1,
+            KitAColor2 = d.KitAColor2,
+            KitAColor3 = d.KitAColor3,
+            KitAColor4 = d.KitAColor4,
+            KitThrdColor1 = d.KitThrdColor1,
+            KitThrdColor2 = d.KitThrdColor2,
+            KitThrdColor3 = d.KitThrdColor3,
+            KitThrdColor4 = d.KitThrdColor4,
+            DCustomKit = d.DCustomKit,
+            CrestColor = d.CrestColor,
+            CrestAssetId = d.CrestAssetId,
+            SelectedKitType = d.SelectedKitType,
+        };
+
+    private static long? GetManOfTheMatchId(MatchEntity match)
+    {
+        var flagged = match.MatchPlayers
+            .Where(mp => mp.Mom)
+            .Select(mp => new { mp.PlayerEntityId, mp.Rating, Score = mp.Goals + mp.Assists })
+            .ToList();
+
+        if (flagged.Count == 1) return flagged[0].PlayerEntityId;
+        if (flagged.Count > 1)
+            return flagged
+                .OrderByDescending(x => x.Rating)
+                .ThenByDescending(x => x.Score)
+                .ThenBy(x => x.PlayerEntityId)
+                .First().PlayerEntityId;
+
+        var best = match.MatchPlayers
+            .Select(mp => new { mp.PlayerEntityId, mp.Rating, Score = mp.Goals + mp.Assists })
+            .OrderByDescending(x => x.Rating)
+            .ThenByDescending(x => x.Score)
+            .ThenBy(x => x.PlayerEntityId)
+            .FirstOrDefault();
+
+        return best?.PlayerEntityId;
+    }
+
+    private static List<long> ParseClubIdsFromConfig(IConfiguration config)
+    {
+        var raw = config["EAFCBackgroundWorkerSettings:ClubIds"] ?? config["EAFCBackgroundWorkerSettings:ClubId"];
+        if (string.IsNullOrWhiteSpace(raw)) return new List<long>();
+        var parts = raw.Split(new[] { ';', ',', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        return parts
+            .Select(p => long.TryParse(p.Trim(), out var v) ? (long?)v : null)
+            .Where(v => v.HasValue && v.Value > 0)
+            .Select(v => v!.Value)
+            .Distinct()
+            .ToList();
+    }
+
+    private static int ClampOpp(int value) => Math.Min(MaxOpponentPlayers, Math.Max(MinOpponentPlayers, value));
+
+    private static int? ReadOppAliasOrNull(HttpRequest req, int? opponentCount)
+    {
+        if (opponentCount.HasValue) return opponentCount;
+        return req.Query.TryGetValue("opp", out var v) && int.TryParse(v, out var parsed) ? parsed : null;
+    }
+
+    private static ClubMatchSummaryDto BuildClubSummaryNames(MatchEntity match, long cid, short redCards, long? motmId)
+    {
+        static bool IsGk(string? pos)
+        {
+            if (string.IsNullOrWhiteSpace(pos)) return false;
+            var p = pos.Trim().ToUpperInvariant();
+            return p is "GK" or "GOL" or "GOALKEEPER" or "GOLEIRO";
+        }
+
+        var clubPlayers = match.MatchPlayers.Where(mp => mp.ClubId == cid).ToList();
+
+        var hatTrickNames = clubPlayers
+            .GroupBy(mp => mp.PlayerEntityId)
+            .Select(g => new
+            {
+                Goals = g.Sum(x => (int)x.Goals),
+                Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
+            })
+            .Where(x => x.Goals >= 3)
+            .Select(x => x.Name)
+            .ToList();
+
+        var gkName = clubPlayers
+            .Where(mp => IsGk(mp.Pos))
+            .GroupBy(mp => mp.PlayerEntityId)
+            .Select(g => new
+            {
+                CleanSheetsGk = g.Sum(x => (int)x.Cleansheetsgk),
+                Saves = g.Sum(x => (int)x.Saves),
+                Rating = g.Max(x => x.Rating),
+                Name = g.Select(x => x.Player?.Playername).FirstOrDefault()
+            })
+            .OrderByDescending(x => x.CleanSheetsGk)
+            .ThenByDescending(x => x.Saves)
+            .ThenByDescending(x => x.Rating)
+            .ThenBy(x => x.Name)
+            .Select(x => x.Name)
+            .FirstOrDefault();
+
+        string? motmName = null;
+        if (motmId.HasValue && clubPlayers.Any(mp => mp.PlayerEntityId == motmId.Value))
+            motmName = clubPlayers.Where(mp => mp.PlayerEntityId == motmId.Value).Select(mp => mp.Player?.Playername).FirstOrDefault();
+
+        var dnfWinner = match.Clubs.FirstOrDefault(c => c.WinnerByDnf);
+        var disconnected = dnfWinner != null && dnfWinner.ClubId != cid;
+
+        return new ClubMatchSummaryDto
+        {
+            RedCards = redCards,
+            HadHatTrick = hatTrickNames.Count > 0,
+            HatTrickPlayerNames = hatTrickNames,
+            GoalkeeperPlayerName = gkName,
+            ManOfTheMatchPlayerName = motmName,
+            Disconnected = disconnected
+        };
+    }
 }
