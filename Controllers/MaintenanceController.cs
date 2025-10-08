@@ -204,8 +204,10 @@ public class MaintenanceController : ControllerBase
     [HttpPost("club/{clubId:long}/opponents/division/refresh")]
     public async Task<IActionResult> RefreshOpponentsCurrentDivision(long clubId, CancellationToken ct)
     {
+        string nomeClube = "";
         try
         {
+
             if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
             var opponents = await
@@ -243,6 +245,8 @@ public class MaintenanceController : ControllerBase
                                                 .Select(x => x.Details!.Name!)
                                                 .FirstOrDefaultAsync(ct);
 
+                nomeClube = name;
+
                 if (string.IsNullOrWhiteSpace(name))
                 {
                     results.Add(new { opponentId = opp.OpponentId, status = "skipped_no_name" });
@@ -279,7 +283,7 @@ public class MaintenanceController : ControllerBase
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar divisões dos oponentes.", details = ex.Message, stackTrace = ex.StackTrace });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar divisões dos oponentes.", details = ex.Message, nome = nomeClube });
         }
     }   
 
