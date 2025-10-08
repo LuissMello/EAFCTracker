@@ -23,352 +23,114 @@ public class MaintenanceController : ControllerBase
     [HttpPost("clubs/overall/refresh")]
     public async Task<IActionResult> RefreshClubsOverall(CancellationToken ct)
     {
-        var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
-
-        int processed = 0;
-        int overallUpdated = 0;
-        int playoffsInserted = 0;
-        int playoffsUpdated = 0;
-
-        foreach (var clubId in clubIds)
+        try
         {
-            processed++;
+            var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
 
-            var overallTask = FetchOverallDtoAsync(clubId, ct);
-            var playoffTask = FetchPlayoffAchievementsAsync(clubId, ct);
+            int processed = 0;
+            int overallUpdated = 0;
+            int playoffsInserted = 0;
+            int playoffsUpdated = 0;
 
-            await Task.WhenAll(overallTask, playoffTask);
-
-            var overallDto = overallTask.Result;
-            var playoffDtos = playoffTask.Result;
-
-            if (overallDto is not null)
+            foreach (var clubId in clubIds)
             {
-                var existing = await _db.OverallStats.FirstOrDefaultAsync(o => o.ClubId == clubId, ct);
-                if (existing is null)
+                processed++;
+
+                var overallTask = FetchOverallDtoAsync(clubId, ct);
+                var playoffTask = FetchPlayoffAchievementsAsync(clubId, ct);
+
+                await Task.WhenAll(overallTask, playoffTask);
+
+                var overallDto = overallTask.Result;
+                var playoffDtos = playoffTask.Result;
+
+                if (overallDto is not null)
                 {
-                    var entity = MapToEntity(clubId, overallDto);
-                    await _db.OverallStats.AddAsync(entity, ct);
-                    overallUpdated++;
+                    var existing = await _db.OverallStats.FirstOrDefaultAsync(o => o.ClubId == clubId, ct);
+                    if (existing is null)
+                    {
+                        var entity = MapToEntity(clubId, overallDto);
+                        await _db.OverallStats.AddAsync(entity, ct);
+                        overallUpdated++;
+                    }
+                    else
+                    {
+                        MapToEntity(clubId, overallDto, existing);
+                        _db.OverallStats.Update(existing);
+                        overallUpdated++;
+                    }
                 }
-                else
+
+                if (playoffDtos is not null && playoffDtos.Count > 0)
                 {
-                    MapToEntity(clubId, overallDto, existing);
-                    _db.OverallStats.Update(existing);
-                    overallUpdated++;
+                    var (ins, upd) = await UpsertPlayoffAchievementsAsync(clubId, playoffDtos, ct);
+                    playoffsInserted += ins;
+                    playoffsUpdated += upd;
                 }
+
+                if (_db.ChangeTracker.HasChanges())
+                    await _db.SaveChangesAsync(ct);
             }
 
-            if (playoffDtos is not null && playoffDtos.Count > 0)
-            {
-                var (ins, upd) = await UpsertPlayoffAchievementsAsync(clubId, playoffDtos, ct);
-                playoffsInserted += ins;
-                playoffsUpdated += upd;
-            }
-
-            if (_db.ChangeTracker.HasChanges())
-                await _db.SaveChangesAsync(ct);
+            return Ok(new { processed, overallUpdated, playoffsInserted, playoffsUpdated });
         }
-
-        return Ok(new { processed, overallUpdated, playoffsInserted, playoffsUpdated });
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os clubes.", details = ex.Message });
+        }
     }
 
     [HttpPost("club/{clubId:long}/division/refresh")]
     public async Task<IActionResult> RefreshClubCurrentDivision(long clubId, [FromQuery] string? name, CancellationToken ct)
     {
-        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
-
-        if (string.IsNullOrWhiteSpace(name))
+        try
         {
-            name = await _db.MatchClubs
-                            .AsNoTracking()
-                            .Where(mc => mc.ClubId == clubId && mc.Details != null && mc.Details.Name != null)
-                            .OrderByDescending(mc => mc.Id)
-                            .Select(mc => mc.Details!.Name!)
-                            .FirstOrDefaultAsync(ct);
+            if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                name = await _db.MatchClubs
+                                .AsNoTracking()
+                                .Where(mc => mc.ClubId == clubId && mc.Details != null && mc.Details.Name != null)
+                                .OrderByDescending(mc => mc.Id)
+                                .Select(mc => mc.Details!.Name!)
+                                .FirstOrDefaultAsync(ct);
+            }
+
+            if (string.IsNullOrWhiteSpace(name))
+                return NotFound(new { message = "Nome do clube não encontrado em histórico e não foi informado via querystring." });
+
+            var div = await FetchCurrentDivisionByNameAsync(name!, clubId, ct);
+            if (!div.HasValue)
+                return NotFound(new { message = "Divisão atual não encontrada na EA para este clube/nome." });
+
+            var rows = await _db.OverallStats.Where(mc => mc.ClubId == clubId).ToListAsync(ct);
+            if (rows.Count == 0)
+                return NotFound(new { message = "Nenhum OverallStats encontrado para este clube." });
+
+            foreach (var d in rows) d.CurrentDivision = div.Value;
+
+            _db.OverallStats.UpdateRange(rows);
+            await _db.SaveChangesAsync(ct);
+
+            return Ok(new { clubId, clubName = name, currentDivision = div.Value, updatedRows = rows.Count });
         }
-
-        if (string.IsNullOrWhiteSpace(name))
-            return NotFound(new { message = "Nome do clube não encontrado em histórico e não foi informado via querystring." });
-
-        var div = await FetchCurrentDivisionByNameAsync(name!, clubId, ct);
-        if (!div.HasValue)
-            return NotFound(new { message = "Divisão atual não encontrada na EA para este clube/nome." });
-
-        var rows = await _db.OverallStats.Where(mc => mc.ClubId == clubId).ToListAsync(ct);
-        if (rows.Count == 0)
-            return NotFound(new { message = "Nenhum OverallStats encontrado para este clube." });
-
-        foreach (var d in rows) d.CurrentDivision = div.Value;
-
-        _db.OverallStats.UpdateRange(rows);
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new { clubId, clubName = name, currentDivision = div.Value, updatedRows = rows.Count });
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar a divisão do clube.", details = ex.Message });
+        }
     }
 
     [HttpPost("club/{clubId:long}/members/enrich")]
     public async Task<IActionResult> EnrichMatchPlayersWithMembers(long clubId, CancellationToken ct)
     {
-        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
-
-        var members = await FetchMembersStatsAsync(clubId, ct);
-        if (members is null || members.members.Count == 0)
-            return NotFound(new { message = "Nenhum membro retornado pela EA para este clubId." });
-
-        var byName = members.members
-                            .Where(m => !string.IsNullOrWhiteSpace(m.name))
-                            .GroupBy(m => m.name.Trim(), StringComparer.OrdinalIgnoreCase)
-                            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-
-        var rows = await _db.MatchPlayers
-                            .Include(mp => mp.Player)
-                            .Where(mp => mp.ClubId == clubId && mp.Player != null)
-                            .ToListAsync(ct);
-
-        int updated = 0;
-        foreach (var mp in rows)
+        try
         {
-            var key = (mp.Player?.Playername ?? "").Trim();
-            if (string.IsNullOrEmpty(key)) continue;
-
-            if (byName.TryGetValue(key, out var mm))
-            {
-                var newOverall = ToNullableInt(mm.proOverall);
-                var newHeight = ToNullableInt(mm.proHeight);
-                var newStr = string.IsNullOrWhiteSpace(mm.proOverallStr) ? null : mm.proOverallStr;
-                var newName = string.IsNullOrWhiteSpace(mm.proName) ? null : mm.proName;
-
-                bool anyChange =
-                    mp.ProOverall != newOverall ||
-                    mp.ProHeight != newHeight ||
-                    mp.ProOverallStr != newStr ||
-                    mp.ProName != newName;
-
-                if (anyChange)
-                {
-                    mp.ProOverall = newOverall;
-                    mp.ProOverallStr = newStr;
-                    mp.ProHeight = newHeight;
-                    mp.ProName = newName;
-                    updated++;
-                }
-            }
-        }
-
-        if (updated > 0)
-            await _db.SaveChangesAsync(ct);
-
-        return Ok(new { clubId, totalMatchPlayers = rows.Count, updated });
-    }
-
-    [HttpPost("club/{clubId:long}/refresh-external")]
-    public async Task<IActionResult> RefreshClubExternal(long clubId, [FromQuery] string? name, CancellationToken ct)
-    {
-        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
-
-        var divResult = await RefreshClubCurrentDivision(clubId, name, ct) as OkObjectResult;
-        var enrichResult = await EnrichMatchPlayersWithMembers(clubId, ct) as OkObjectResult;
-
-        return Ok(new { division = divResult?.Value, members = enrichResult?.Value });
-    }
-
-    [HttpPost("club/{clubId:long}/opponents/division/refresh")]
-    public async Task<IActionResult> RefreshOpponentsCurrentDivision(long clubId, CancellationToken ct)
-    {
-        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
-
-        var opponents = await
-            (from mc in _db.MatchClubs.AsNoTracking()
-             join my in _db.MatchClubs.AsNoTracking() on mc.MatchId equals my.MatchId
-             where my.ClubId == clubId && mc.ClubId != clubId
-             select new { OpponentId = mc.ClubId, Name = mc.Details != null ? mc.Details.Name : null, MatchClubId = mc.Id })
-            .ToListAsync(ct);
-
-        if (opponents.Count == 0)
-            return Ok(new { clubId, opponentsFound = 0, updated = 0, detailsUpdated = 0 });
-
-        var grouped = opponents
-            .GroupBy(o => o.OpponentId)
-            .Select(g =>
-            {
-                var name = g.Where(x => !string.IsNullOrWhiteSpace(x.Name))
-                            .OrderByDescending(x => x.MatchClubId)
-                            .Select(x => x.Name!)
-                            .FirstOrDefault();
-                return new { OpponentId = g.Key, Name = name };
-            })
-            .ToList();
-
-        int updated = 0;
-        int detailsUpdated = 0;
-        var results = new List<object>();
-
-        foreach (var opp in grouped)
-        {
-            var name = opp.Name ?? await _db.MatchClubs
-                                            .AsNoTracking()
-                                            .Where(x => x.ClubId == opp.OpponentId && x.Details != null && x.Details.Name != null)
-                                            .OrderByDescending(x => x.Id)
-                                            .Select(x => x.Details!.Name!)
-                                            .FirstOrDefaultAsync(ct);
-
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                results.Add(new { opponentId = opp.OpponentId, status = "skipped_no_name" });
-                continue;
-            }
-
-            var div = await FetchCurrentDivisionByNameAsync(name!, opp.OpponentId, ct);
-            if (!div.HasValue)
-            {
-                results.Add(new { opponentId = opp.OpponentId, name, status = "not_found_in_ea" });
-                continue;
-            }
-
-            var detailsRows = await _db.OverallStats.Where(mc => mc.ClubId == opp.OpponentId).ToListAsync(ct);
-            if (detailsRows.Count == 0)
-            {
-                results.Add(new { opponentId = opp.OpponentId, name, currentDivision = div.Value, status = "no_overall_rows" });
-                continue;
-            }
-
-            foreach (var d in detailsRows) d.CurrentDivision = div.Value;
-
-            _db.OverallStats.UpdateRange(detailsRows);
-            detailsUpdated += detailsRows.Count;
-            updated++;
-
-            results.Add(new { opponentId = opp.OpponentId, name, currentDivision = div.Value, detailsAffected = detailsRows.Count });
-        }
-
-        if (_db.ChangeTracker.HasChanges())
-            await _db.SaveChangesAsync(ct);
-
-        return Ok(new { clubId, opponentsFound = grouped.Count, updatedOpponents = updated, detailsUpdated, results });
-    }
-
-    [HttpPost("clubs/playoffs/refresh-all")]
-    public async Task<IActionResult> RefreshAllPlayoffsAchievements(CancellationToken ct)
-    {
-        var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
-
-        int processed = 0;
-        int insertedTotal = 0;
-        int updatedTotal = 0;
-
-        foreach (var clubId in clubIds)
-        {
-            processed++;
-
-            var playoffDtos = await FetchPlayoffAchievementsAsync(clubId, ct);
-            if (playoffDtos is null || playoffDtos.Count == 0)
-                continue;
-
-            var (ins, upd) = await UpsertPlayoffAchievementsAsync(clubId, playoffDtos, ct);
-            insertedTotal += ins;
-            updatedTotal += upd;
-
-            if (_db.ChangeTracker.HasChanges())
-                await _db.SaveChangesAsync(ct);
-        }
-
-        return Ok(new { processedClubs = processed, playoffsInserted = insertedTotal, playoffsUpdated = updatedTotal });
-    }
-
-    [HttpPost("clubs/overall/refresh-all")]
-    public async Task<IActionResult> RefreshAllOverallStats(CancellationToken ct)
-    {
-        var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
-
-        int processed = 0;
-        int overallInserted = 0;
-        int overallUpdated = 0;
-
-        foreach (var clubId in clubIds)
-        {
-            processed++;
-
-            var overallDto = await FetchOverallDtoAsync(clubId, ct);
-            if (overallDto is null) continue;
-
-            var existing = await _db.OverallStats.FirstOrDefaultAsync(o => o.ClubId == clubId, ct);
-            if (existing is null)
-            {
-                var entity = MapToEntity(clubId, overallDto);
-                await _db.OverallStats.AddAsync(entity, ct);
-                overallInserted++;
-            }
-            else
-            {
-                MapToEntity(clubId, overallDto, existing);
-                _db.OverallStats.Update(existing);
-                overallUpdated++;
-            }
-
-            if (_db.ChangeTracker.HasChanges())
-                await _db.SaveChangesAsync(ct);
-        }
-
-        return Ok(new { processedClubs = processed, overallInserted, overallUpdated });
-    }
-
-    [HttpPost("clubs/division/refresh-all")]
-    public async Task<IActionResult> RefreshAllCurrentDivisions(CancellationToken ct)
-    {
-        var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
-
-        int processed = 0;
-        int clubsWithDivision = 0;
-        int detailsUpdated = 0;
-
-        foreach (var clubId in clubIds)
-        {
-            processed++;
-
-            var clubName = await _db.MatchClubs
-                                    .AsNoTracking()
-                                    .Where(mc => mc.ClubId == clubId && mc.Details != null && mc.Details.Name != null)
-                                    .OrderByDescending(mc => mc.Id)
-                                    .Select(mc => mc.Details!.Name!)
-                                    .FirstOrDefaultAsync(ct);
-
-            if (string.IsNullOrWhiteSpace(clubName)) continue;
-
-            var div = await FetchCurrentDivisionByNameAsync(clubName, clubId, ct);
-            if (!div.HasValue) continue;
-
-            var rows = await _db.OverallStats.Where(mc => mc.ClubId == clubId).ToListAsync(ct);
-            if (rows.Count == 0) continue;
-
-            foreach (var d in rows) d.CurrentDivision = div.Value;
-
-            _db.OverallStats.UpdateRange(rows);
-            detailsUpdated += rows.Count;
-            clubsWithDivision++;
-
-            if (_db.ChangeTracker.HasChanges())
-                await _db.SaveChangesAsync(ct);
-        }
-
-        return Ok(new { processedClubs = processed, clubsUpdated = clubsWithDivision, overallRowsUpdated = detailsUpdated });
-    }
-
-    [HttpPost("clubs/members/enrich-all")]
-    public async Task<IActionResult> EnrichAllMatchPlayersWithMembers(CancellationToken ct)
-    {
-        var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
-
-        int processed = 0;
-        int clubsUpdated = 0;
-        int totalPlayersUpdated = 0;
-
-        foreach (var clubId in clubIds)
-        {
-            processed++;
+            if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
             var members = await FetchMembersStatsAsync(clubId, ct);
-            if (members is null || members.members.Count == 0) continue;
+            if (members is null || members.members.Count == 0)
+                return NotFound(new { message = "Nenhum membro retornado pela EA para este clubId." });
 
             var byName = members.members
                                 .Where(m => !string.IsNullOrWhiteSpace(m.name))
@@ -411,49 +173,169 @@ public class MaintenanceController : ControllerBase
             }
 
             if (updated > 0)
-            {
                 await _db.SaveChangesAsync(ct);
-                totalPlayersUpdated += updated;
-                clubsUpdated++;
-            }
-        }
 
-        return Ok(new { processedClubs = processed, clubsUpdated, playersUpdated = totalPlayersUpdated });
+            return Ok(new { clubId, totalMatchPlayers = rows.Count, updated });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao enriquecer os jogadores do clube.", details = ex.Message });
+        }
     }
 
-    [HttpPost("clubs/refresh-everything")]
-    public async Task<IActionResult> RefreshEverything(CancellationToken ct)
+    [HttpPost("club/{clubId:long}/refresh-external")]
+    public async Task<IActionResult> RefreshClubExternal(long clubId, [FromQuery] string? name, CancellationToken ct)
     {
-        var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
-
-        int processed = 0;
-        int overallInserted = 0;
-        int overallUpdated = 0;
-        int playoffsInserted = 0;
-        int playoffsUpdated = 0;
-        int clubsDivisionUpdated = 0;
-        int overallRowsDivisionUpdated = 0;
-        int clubsMembersUpdated = 0;
-        int playersUpdated = 0;
-
-        foreach (var clubId in clubIds)
+        try
         {
-            processed++;
+            if (clubId <= 0) return BadRequest("Informe um clubId válido.");
 
-            var overallTask = FetchOverallDtoAsync(clubId, ct);
-            var playoffsTask = FetchPlayoffAchievementsAsync(clubId, ct);
-            var clubNameTask = _db.MatchClubs
-                                  .AsNoTracking()
-                                  .Where(mc => mc.ClubId == clubId && mc.Details != null && mc.Details.Name != null)
-                                  .OrderByDescending(mc => mc.Id)
-                                  .Select(mc => mc.Details!.Name!)
-                                  .FirstOrDefaultAsync(ct);
+            var divResult = await RefreshClubCurrentDivision(clubId, name, ct) as OkObjectResult;
+            var enrichResult = await EnrichMatchPlayersWithMembers(clubId, ct) as OkObjectResult;
 
-            await Task.WhenAll(overallTask, playoffsTask, clubNameTask);
+            return Ok(new { division = divResult?.Value, members = enrichResult?.Value });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar dados externos do clube.", details = ex.Message });
+        }
+    }
 
-            var overallDto = overallTask.Result;
-            if (overallDto is not null)
+    [HttpPost("club/{clubId:long}/opponents/division/refresh")]
+    public async Task<IActionResult> RefreshOpponentsCurrentDivision(long clubId, CancellationToken ct)
+    {
+        try
+        {
+            if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+
+            var opponents = await
+                (from mc in _db.MatchClubs.AsNoTracking()
+                 join my in _db.MatchClubs.AsNoTracking() on mc.MatchId equals my.MatchId
+                 where my.ClubId == clubId && mc.ClubId != clubId
+                 select new { OpponentId = mc.ClubId, Name = mc.Details != null ? mc.Details.Name : null, MatchClubId = mc.Id })
+                .ToListAsync(ct);
+
+            if (opponents.Count == 0)
+                return Ok(new { clubId, opponentsFound = 0, updated = 0, detailsUpdated = 0 });
+
+            var grouped = opponents
+                .GroupBy(o => o.OpponentId)
+                .Select(g =>
+                {
+                    var name = g.Where(x => !string.IsNullOrWhiteSpace(x.Name))
+                                .OrderByDescending(x => x.MatchClubId)
+                                .Select(x => x.Name!)
+                                .FirstOrDefault();
+                    return new { OpponentId = g.Key, Name = name };
+                })
+                .ToList();
+
+            int updated = 0;
+            int detailsUpdated = 0;
+            var results = new List<object>();
+
+            foreach (var opp in grouped)
             {
+                var name = opp.Name ?? await _db.MatchClubs
+                                                .AsNoTracking()
+                                                .Where(x => x.ClubId == opp.OpponentId && x.Details != null && x.Details.Name != null)
+                                                .OrderByDescending(x => x.Id)
+                                                .Select(x => x.Details!.Name!)
+                                                .FirstOrDefaultAsync(ct);
+
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    results.Add(new { opponentId = opp.OpponentId, status = "skipped_no_name" });
+                    continue;
+                }
+
+                var div = await FetchCurrentDivisionByNameAsync(name!, opp.OpponentId, ct);
+                if (!div.HasValue)
+                {
+                    results.Add(new { opponentId = opp.OpponentId, name, status = "not_found_in_ea" });
+                    continue;
+                }
+
+                var detailsRows = await _db.OverallStats.Where(mc => mc.ClubId == opp.OpponentId).ToListAsync(ct);
+                if (detailsRows.Count == 0)
+                {
+                    results.Add(new { opponentId = opp.OpponentId, name, currentDivision = div.Value, status = "no_overall_rows" });
+                    continue;
+                }
+
+                foreach (var d in detailsRows) d.CurrentDivision = div.Value;
+
+                _db.OverallStats.UpdateRange(detailsRows);
+                detailsUpdated += detailsRows.Count;
+                updated++;
+
+                results.Add(new { opponentId = opp.OpponentId, name, currentDivision = div.Value, detailsAffected = detailsRows.Count });
+            }
+
+            if (_db.ChangeTracker.HasChanges())
+                await _db.SaveChangesAsync(ct);
+
+            return Ok(new { clubId, opponentsFound = grouped.Count, updatedOpponents = updated, detailsUpdated, results });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar divisões dos oponentes.", details = ex.Message });
+        }
+    }   
+
+    [HttpPost("clubs/playoffs/refresh-all")]
+    public async Task<IActionResult> RefreshAllPlayoffsAchievements(CancellationToken ct)
+    {
+        try
+        {
+            var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
+
+            int processed = 0;
+            int insertedTotal = 0;
+            int updatedTotal = 0;
+
+            foreach (var clubId in clubIds)
+            {
+                processed++;
+
+                var playoffDtos = await FetchPlayoffAchievementsAsync(clubId, ct);
+                if (playoffDtos is null || playoffDtos.Count == 0)
+                    continue;
+
+                var (ins, upd) = await UpsertPlayoffAchievementsAsync(clubId, playoffDtos, ct);
+                insertedTotal += ins;
+                updatedTotal += upd;
+
+                if (_db.ChangeTracker.HasChanges())
+                    await _db.SaveChangesAsync(ct);
+            }
+
+            return Ok(new { processedClubs = processed, playoffsInserted = insertedTotal, playoffsUpdated = updatedTotal });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os playoffs.", details = ex.Message });
+        }
+    }
+
+    [HttpPost("clubs/overall/refresh-all")]
+    public async Task<IActionResult> RefreshAllOverallStats(CancellationToken ct)
+    {
+        try
+        {
+            var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
+
+            int processed = 0;
+            int overallInserted = 0;
+            int overallUpdated = 0;
+
+            foreach (var clubId in clubIds)
+            {
+                processed++;
+
+                var overallDto = await FetchOverallDtoAsync(clubId, ct);
+                if (overallDto is null) continue;
+
                 var existing = await _db.OverallStats.FirstOrDefaultAsync(o => o.ClubId == clubId, ct);
                 if (existing is null)
                 {
@@ -467,36 +349,85 @@ public class MaintenanceController : ControllerBase
                     _db.OverallStats.Update(existing);
                     overallUpdated++;
                 }
+
+                if (_db.ChangeTracker.HasChanges())
+                    await _db.SaveChangesAsync(ct);
             }
 
-            var playoffDtos = playoffsTask.Result;
-            if (playoffDtos is not null && playoffDtos.Count > 0)
+            return Ok(new { processedClubs = processed, overallInserted, overallUpdated });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os overall stats.", details = ex.Message });
+        }
+    }
+
+    [HttpPost("clubs/division/refresh-all")]
+    public async Task<IActionResult> RefreshAllCurrentDivisions(CancellationToken ct)
+    {
+        try
+        {
+            var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
+
+            int processed = 0;
+            int clubsWithDivision = 0;
+            int detailsUpdated = 0;
+
+            foreach (var clubId in clubIds)
             {
-                var (ins, upd) = await UpsertPlayoffAchievementsAsync(clubId, playoffDtos, ct);
-                playoffsInserted += ins;
-                playoffsUpdated += upd;
+                processed++;
+
+                var clubName = await _db.MatchClubs
+                                        .AsNoTracking()
+                                        .Where(mc => mc.ClubId == clubId && mc.Details != null && mc.Details.Name != null)
+                                        .OrderByDescending(mc => mc.Id)
+                                        .Select(mc => mc.Details!.Name!)
+                                        .FirstOrDefaultAsync(ct);
+
+                if (string.IsNullOrWhiteSpace(clubName)) continue;
+
+                var div = await FetchCurrentDivisionByNameAsync(clubName, clubId, ct);
+                if (!div.HasValue) continue;
+
+                var rows = await _db.OverallStats.Where(mc => mc.ClubId == clubId).ToListAsync(ct);
+                if (rows.Count == 0) continue;
+
+                foreach (var d in rows) d.CurrentDivision = div.Value;
+
+                _db.OverallStats.UpdateRange(rows);
+                detailsUpdated += rows.Count;
+                clubsWithDivision++;
+
+                if (_db.ChangeTracker.HasChanges())
+                    await _db.SaveChangesAsync(ct);
             }
 
-            var clubName = clubNameTask.Result;
-            if (!string.IsNullOrWhiteSpace(clubName))
-            {
-                var div = await FetchCurrentDivisionByNameAsync(clubName!, clubId, ct);
-                if (div.HasValue)
-                {
-                    var rows = await _db.OverallStats.Where(mc => mc.ClubId == clubId).ToListAsync(ct);
-                    if (rows.Count > 0)
-                    {
-                        foreach (var d in rows) d.CurrentDivision = div.Value;
-                        _db.OverallStats.UpdateRange(rows);
-                        overallRowsDivisionUpdated += rows.Count;
-                        clubsDivisionUpdated++;
-                    }
-                }
-            }
+            return Ok(new { processedClubs = processed, clubsUpdated = clubsWithDivision, overallRowsUpdated = detailsUpdated });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar as divisões dos clubes.", details = ex.Message });
+        }
+    }
 
-            var members = await FetchMembersStatsAsync(clubId, ct);
-            if (members is not null && members.members.Count > 0)
+    [HttpPost("clubs/members/enrich-all")]
+    public async Task<IActionResult> EnrichAllMatchPlayersWithMembers(CancellationToken ct)
+    {
+        try
+        {
+            var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
+
+            int processed = 0;
+            int clubsUpdated = 0;
+            int totalPlayersUpdated = 0;
+
+            foreach (var clubId in clubIds)
             {
+                processed++;
+
+                var members = await FetchMembersStatsAsync(clubId, ct);
+                if (members is null || members.members.Count == 0) continue;
+
                 var byName = members.members
                                     .Where(m => !string.IsNullOrWhiteSpace(m.name))
                                     .GroupBy(m => m.name.Trim(), StringComparer.OrdinalIgnoreCase)
@@ -539,23 +470,162 @@ public class MaintenanceController : ControllerBase
 
                 if (updated > 0)
                 {
-                    playersUpdated += updated;
-                    clubsMembersUpdated++;
+                    await _db.SaveChangesAsync(ct);
+                    totalPlayersUpdated += updated;
+                    clubsUpdated++;
                 }
             }
 
-            if (_db.ChangeTracker.HasChanges())
-                await _db.SaveChangesAsync(ct);
+            return Ok(new { processedClubs = processed, clubsUpdated, playersUpdated = totalPlayersUpdated });
         }
-
-        return Ok(new
+        catch (Exception ex)
         {
-            processedClubs = processed,
-            overall = new { inserted = overallInserted, updated = overallUpdated },
-            playoffs = new { inserted = playoffsInserted, updated = playoffsUpdated },
-            divisions = new { clubsUpdated = clubsDivisionUpdated, overallRowsUpdated = overallRowsDivisionUpdated },
-            members = new { clubsUpdated = clubsMembersUpdated, playersUpdated }
-        });
+            return StatusCode(500, new { error = "Ocorreu um erro ao enriquecer os jogadores dos clubes.", details = ex.Message });
+        }
+    }
+
+    [HttpPost("clubs/refresh-everything")]
+    public async Task<IActionResult> RefreshEverything(CancellationToken ct)
+    {
+        try
+        {
+            var clubIds = await _db.MatchClubs.AsNoTracking().Select(mc => mc.ClubId).Distinct().ToListAsync(ct);
+
+            int processed = 0;
+            int overallInserted = 0;
+            int overallUpdated = 0;
+            int playoffsInserted = 0;
+            int playoffsUpdated = 0;
+            int clubsDivisionUpdated = 0;
+            int overallRowsDivisionUpdated = 0;
+            int clubsMembersUpdated = 0;
+            int playersUpdated = 0;
+
+            foreach (var clubId in clubIds)
+            {
+                processed++;
+
+                var overallTask = FetchOverallDtoAsync(clubId, ct);
+                var playoffsTask = FetchPlayoffAchievementsAsync(clubId, ct);
+                var clubNameTask = _db.MatchClubs
+                                      .AsNoTracking()
+                                      .Where(mc => mc.ClubId == clubId && mc.Details != null && mc.Details.Name != null)
+                                      .OrderByDescending(mc => mc.Id)
+                                      .Select(mc => mc.Details!.Name!)
+                                      .FirstOrDefaultAsync(ct);
+
+                await Task.WhenAll(overallTask, playoffsTask, clubNameTask);
+
+                var overallDto = overallTask.Result;
+                if (overallDto is not null)
+                {
+                    var existing = await _db.OverallStats.FirstOrDefaultAsync(o => o.ClubId == clubId, ct);
+                    if (existing is null)
+                    {
+                        var entity = MapToEntity(clubId, overallDto);
+                        await _db.OverallStats.AddAsync(entity, ct);
+                        overallInserted++;
+                    }
+                    else
+                    {
+                        MapToEntity(clubId, overallDto, existing);
+                        _db.OverallStats.Update(existing);
+                        overallUpdated++;
+                    }
+                }
+
+                var playoffDtos = playoffsTask.Result;
+                if (playoffDtos is not null && playoffDtos.Count > 0)
+                {
+                    var (ins, upd) = await UpsertPlayoffAchievementsAsync(clubId, playoffDtos, ct);
+                    playoffsInserted += ins;
+                    playoffsUpdated += upd;
+                }
+
+                var clubName = clubNameTask.Result;
+                if (!string.IsNullOrWhiteSpace(clubName))
+                {
+                    var div = await FetchCurrentDivisionByNameAsync(clubName!, clubId, ct);
+                    if (div.HasValue)
+                    {
+                        var rows = await _db.OverallStats.Where(mc => mc.ClubId == clubId).ToListAsync(ct);
+                        if (rows.Count > 0)
+                        {
+                            foreach (var d in rows) d.CurrentDivision = div.Value;
+                            _db.OverallStats.UpdateRange(rows);
+                            overallRowsDivisionUpdated += rows.Count;
+                            clubsDivisionUpdated++;
+                        }
+                    }
+                }
+
+                var members = await FetchMembersStatsAsync(clubId, ct);
+                if (members is not null && members.members.Count > 0)
+                {
+                    var byName = members.members
+                                        .Where(m => !string.IsNullOrWhiteSpace(m.name))
+                                        .GroupBy(m => m.name.Trim(), StringComparer.OrdinalIgnoreCase)
+                                        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+                    var rows = await _db.MatchPlayers
+                                        .Include(mp => mp.Player)
+                                        .Where(mp => mp.ClubId == clubId && mp.Player != null)
+                                        .ToListAsync(ct);
+
+                    int updated = 0;
+                    foreach (var mp in rows)
+                    {
+                        var key = (mp.Player?.Playername ?? "").Trim();
+                        if (string.IsNullOrEmpty(key)) continue;
+
+                        if (byName.TryGetValue(key, out var mm))
+                        {
+                            var newOverall = ToNullableInt(mm.proOverall);
+                            var newHeight = ToNullableInt(mm.proHeight);
+                            var newStr = string.IsNullOrWhiteSpace(mm.proOverallStr) ? null : mm.proOverallStr;
+                            var newName = string.IsNullOrWhiteSpace(mm.proName) ? null : mm.proName;
+
+                            bool anyChange =
+                                mp.ProOverall != newOverall ||
+                                mp.ProHeight != newHeight ||
+                                mp.ProOverallStr != newStr ||
+                                mp.ProName != newName;
+
+                            if (anyChange)
+                            {
+                                mp.ProOverall = newOverall;
+                                mp.ProOverallStr = newStr;
+                                mp.ProHeight = newHeight;
+                                mp.ProName = newName;
+                                updated++;
+                            }
+                        }
+                    }
+
+                    if (updated > 0)
+                    {
+                        playersUpdated += updated;
+                        clubsMembersUpdated++;
+                    }
+                }
+
+                if (_db.ChangeTracker.HasChanges())
+                    await _db.SaveChangesAsync(ct);
+            }
+
+            return Ok(new
+            {
+                processedClubs = processed,
+                overall = new { inserted = overallInserted, updated = overallUpdated },
+                playoffs = new { inserted = playoffsInserted, updated = playoffsUpdated },
+                divisions = new { clubsUpdated = clubsDivisionUpdated, overallRowsUpdated = overallRowsDivisionUpdated },
+                members = new { clubsUpdated = clubsMembersUpdated, playersUpdated }
+            });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar tudo.", details = ex.Message });
+        }
     }
 
     private async Task<OverallStats?> FetchOverallDtoAsync(long clubId, CancellationToken ct)
