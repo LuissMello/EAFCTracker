@@ -418,6 +418,10 @@ public class ClubMatchService : IClubMatchService
                         if (!string.IsNullOrEmpty(keyName))
                             byName.TryGetValue(keyName, out mm);
 
+                        var ratingVal = NormalizeRating(SafeDouble(data.Rating));
+
+                        bool disconnected = Math.Abs(ratingVal - 3.0) < 0.0001;
+
                         matchPlayerRows.Add(new MatchPlayerEntity
                         {
                             MatchId = matchId,
@@ -465,7 +469,8 @@ public class ClubMatchService : IClubMatchService
                             ProOverall = ToNullableInt(mm?.proOverall),
                             ProOverallStr = mm?.proOverallStr,
                             ProHeight = ToNullableInt(mm?.proHeight),
-                            ProName = string.IsNullOrWhiteSpace(mm?.proName) ? null : mm!.proName
+                            ProName = string.IsNullOrWhiteSpace(mm?.proName) ? null : mm!.proName,
+                            Disconnected = disconnected
                         });
                     }
                 }

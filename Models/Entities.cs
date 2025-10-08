@@ -96,19 +96,20 @@ public class MatchPlayerEntity
     public short Namespace { get; set; }
     public short Passattempts { get; set; }
     public short Passesmade { get; set; }
-    public string Pos { get; set; }
+    public string Pos { get; set; } = default!;
     public double Rating { get; set; }
-    public string Realtimegame { get; set; }
-    public string Realtimeidle { get; set; }
+    public string Realtimegame { get; set; } = default!;
+    public string Realtimeidle { get; set; } = default!;
     public short Redcards { get; set; }
     public short Saves { get; set; }
     public short Score { get; set; }
     public short Shots { get; set; }
     public short Tackleattempts { get; set; }
     public short Tacklesmade { get; set; }
-    public string Vproattr { get; set; }
-    public string Vprohackreason { get; set; }
+    public string Vproattr { get; set; } = default!;
+    public string Vprohackreason { get; set; } = default!;
     public short Wins { get; set; }
+    public bool Disconnected { get; set; }
 
     public short Archetypeid { get; set; }
     public short BallDiveSaves { get; set; }
@@ -116,13 +117,11 @@ public class MatchPlayerEntity
     public short GameTime { get; set; }
     public short GoodDirectionSaves { get; set; }
 
-    public string MatchEventAggregate0 { get; set; }
+    public string MatchEventAggregate0 { get; set; } = default!;
+    public string MatchEventAggregate1 { get; set; } = default!;
+    public string MatchEventAggregate2 { get; set; } = default!;
+    public string MatchEventAggregate3 { get; set; } = default!;
 
-    public string MatchEventAggregate1 { get; set; }
-
-    public string MatchEventAggregate2 { get; set; }
-
-    public string MatchEventAggregate3 { get; set; }
     public short ParrySaves { get; set; }
     public short PunchSaves { get; set; }
     public short ReflexSaves { get; set; }
@@ -133,13 +132,13 @@ public class MatchPlayerEntity
     public int? ProHeight { get; set; }
     public string? ProName { get; set; }
 
-    // Chave estrangeira para PlayerMatchStatsEntity
-    public long PlayerMatchStatsEntityId { get; set; }  // Garante a correspondência com PlayerMatchStats.Id
+    public long PlayerMatchStatsEntityId { get; set; }
 
-    public PlayerEntity Player { get; set; }
-    public MatchEntity Match { get; set; }
-    public PlayerMatchStatsEntity PlayerMatchStats { get; set; }  // Relacionamento com PlayerMatchStatsEntity
+    public PlayerEntity Player { get; set; } = default!;
+    public MatchEntity Match { get; set; } = default!;
+    public PlayerMatchStatsEntity PlayerMatchStats { get; set; } = default!;
 }
+
 
 public class PlayerEntity
 {

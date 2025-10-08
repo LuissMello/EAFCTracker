@@ -63,47 +63,48 @@
             }
         }
 
-        [HttpGet("{matchId:long}/statistics")]
-        public async Task<IActionResult> GetMatchStatisticsById(long matchId, CancellationToken ct)
+    [HttpGet("{matchId:long}/statistics")]
+    public async Task<IActionResult> GetMatchStatisticsById(long matchId, CancellationToken ct)
+    {
+        try
         {
-            try
+            _logger.LogInformation("Getting statistics for match: {MatchId}", matchId);
+            var match = await _db.Matches
+                .AsNoTracking()
+                .Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .FirstOrDefaultAsync(m => m.MatchId == matchId, ct);
+
+            if (match == null)
             {
-                _logger.LogInformation("Getting statistics for match: {MatchId}", matchId);
-                var match = await _db.Matches
-                    .AsNoTracking()
-                    .Include(m => m.Clubs).ThenInclude(c => c.Details)
-                    .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
-                    .FirstOrDefaultAsync(m => m.MatchId == matchId, ct);
-
-                if (match == null)
-                {
-                    _logger.LogWarning("Match not found for statistics: {MatchId}", matchId);
-                    return NotFound();
-                }
-
-                var overall = StatsAggregator.BuildOverallForSingleMatch(match.MatchPlayers);
-                var playersStats = StatsAggregator.BuildPerPlayer(match.MatchPlayers);
-                var clubsStats = StatsAggregator.BuildPerClub(
-                    match.MatchPlayers,
-                    match.Clubs.ToDictionary(c => c.ClubId)
-                );
-
-                _logger.LogInformation("Successfully retrieved statistics for match: {MatchId}", matchId);
-                return Ok(new
-                {
-                    Overall = overall,
-                    Players = playersStats,
-                    Clubs = clubsStats,
-                });
+                _logger.LogWarning("Match not found for statistics: {MatchId}", matchId);
+                return NotFound();
             }
-            catch (Exception ex)
+
+            var overall = StatsAggregator.BuildOverallForSingleMatch(match.MatchPlayers);  
+            var playersStats = StatsAggregator.BuildPerPlayer(match.MatchPlayers, includeDisconnected: true); 
+            var clubsStats = StatsAggregator.BuildPerClub(
+                match.MatchPlayers,
+                match.Clubs.ToDictionary(c => c.ClubId)
+            );
+
+            _logger.LogInformation("Successfully retrieved statistics for match: {MatchId}", matchId);
+            return Ok(new
             {
-                _logger.LogError(ex, "Error while getting statistics for match: {MatchId}", matchId);
-                return StatusCode(500, "Internal server error.");
-            }
+                Overall = overall,
+                Players = playersStats,
+                Clubs = clubsStats,
+            });
         }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error while getting statistics for match: {MatchId}", matchId);
+            return StatusCode(500, "Internal server error.");
+        }
+    }
 
-        [HttpGet("{matchId:long}/players/{playerId:long}/statistics")]
+
+    [HttpGet("{matchId:long}/players/{playerId:long}/statistics")]
         public async Task<ActionResult<MatchPlayerStatsDto>> GetPlayerStatisticsByMatchAndPlayer(long matchId, long playerId, CancellationToken ct)
         {
             try

@@ -11,21 +11,30 @@ namespace EAFCMatchTracker.Dtos
             if (players == null || players.Count == 0)
                 return new MatchStatisticsDto { TotalMatches = 1 };
 
-            int totalPlayers = players.Count;
-            int goals = players.Sum(p => p.Goals);
-            int assists = players.Sum(p => p.Assists);
-            int shots = players.Sum(p => p.Shots);
-            int passesMade = players.Sum(p => p.Passesmade);
-            int passAttempts = players.Sum(p => p.Passattempts);
-            int tacklesMade = players.Sum(p => p.Tacklesmade);
-            int tackleAttempts = players.Sum(p => p.Tackleattempts);
-            double rating = players.Sum(p => p.Rating);
-            int wins = players.Sum(p => p.Wins);
-            int losses = players.Sum(p => p.Losses);
-            int cleanSheets = players.Sum(p => p.Cleansheetsany);
-            int red = players.Sum(p => p.Redcards);
-            int saves = players.Sum(p => p.Saves);
-            int mom = players.Count(p => p.Mom);
+            var data = players.Where(p => p != null && !p.Disconnected).ToList();
+
+            if (data.Count == 0)
+                return new MatchStatisticsDto
+                {
+                    TotalMatches = 1,
+                    TotalPlayers = 0
+                };
+
+            int totalPlayers = data.Count;
+            int goals = data.Sum(p => p.Goals);
+            int assists = data.Sum(p => p.Assists);
+            int shots = data.Sum(p => p.Shots);
+            int passesMade = data.Sum(p => p.Passesmade);
+            int passAttempts = data.Sum(p => p.Passattempts);
+            int tacklesMade = data.Sum(p => p.Tacklesmade);
+            int tackleAttempts = data.Sum(p => p.Tackleattempts);
+            double rating = data.Sum(p => p.Rating);
+            int wins = data.Sum(p => p.Wins);
+            int losses = data.Sum(p => p.Losses);
+            int cleanSheets = data.Sum(p => p.Cleansheetsany);
+            int red = data.Sum(p => p.Redcards);
+            int saves = data.Sum(p => p.Saves);
+            int mom = data.Count(p => p.Mom);
             int draws = totalPlayers - wins - losses;
 
             return new MatchStatisticsDto
@@ -73,14 +82,21 @@ namespace EAFCMatchTracker.Dtos
             };
         }
 
-        public static List<PlayerStatisticsDto> BuildPerPlayer(IEnumerable<MatchPlayerEntity> players)
+        public static List<PlayerStatisticsDto> BuildPerPlayer(
+            IEnumerable<MatchPlayerEntity> players,
+            bool includeDisconnected = false) 
         {
-            return players
+            if (players == null) return new List<PlayerStatisticsDto>();
+
+            var src = players.Where(p => p != null && (includeDisconnected || !p.Disconnected));
+
+            return src
                 .GroupBy(p => p.PlayerEntityId)
                 .Select(g =>
                 {
                     var player = g.First().Player;
                     var matchPlayer = g.First();
+
                     int matches = g.Count();
                     int goals = g.Sum(p => p.Goals);
                     int shots = g.Sum(p => p.Shots);
@@ -122,18 +138,25 @@ namespace EAFCMatchTracker.Dtos
                         PassAccuracyPercent = passAttempts > 0 ? passesMade * 100.0 / passAttempts : 0,
                         TackleSuccessPercent = tackleAttempts > 0 ? tacklesMade * 100.0 / tackleAttempts : 0,
                         GoalAccuracyPercent = shots > 0 ? goals * 100.0 / shots : 0,
-                        WinPercent = matches > 0 ? wins * 100.0 / matches : 0
+                        WinPercent = matches > 0 ? wins * 100.0 / matches : 0,
+
+                        // Para “uma partida”, isso reflete exatamente o estado; para agregados, indica se em ALGUMA partida ele desconectou.
+                        Disconnected = g.Any(p => p.Disconnected)
                     };
                 })
                 .OrderByDescending(p => p.MatchesPlayed)
                 .ToList();
         }
 
+
         public static List<ClubStatisticsDto> BuildPerClub(
-            IEnumerable<MatchPlayerEntity> players,
-            IReadOnlyDictionary<long, MatchClubEntity>? clubsById = null)
+    IEnumerable<MatchPlayerEntity> players,
+    IReadOnlyDictionary<long, MatchClubEntity>? clubsById = null)
         {
-            return players
+            // Filtra jogadores desconectados
+            var data = players.Where(p => p != null && !p.Disconnected);
+
+            return data
                 .GroupBy(p => p.ClubId)
                 .Select(g =>
                 {
@@ -141,14 +164,17 @@ namespace EAFCMatchTracker.Dtos
                     if (clubsById != null && clubsById.TryGetValue(g.Key, out var mc))
                         clubEntity = mc;
 
+                    // Agrupa por partida, mas apenas considerando entradas não-desconectadas
                     var matchesById = g.GroupBy(p => p.MatchId).ToList();
                     int matches = matchesById.Count;
 
+                    // Para métricas por partida (wins/losses/goalsConceded), use um representante do grupo filtrado
                     int goalsConceded = matchesById.Sum(mg => (int)mg.First().Goalsconceded);
                     int wins = matchesById.Sum(mg => (int)mg.First().Wins);
                     int losses = matchesById.Sum(mg => (int)mg.First().Losses);
                     int draws = Math.Max(0, matches - wins - losses);
 
+                    // Acúmulos por jogador (já filtrados)
                     int goals = g.Sum(p => p.Goals);
                     int shots = g.Sum(p => p.Shots);
                     int passesMade = g.Sum(p => p.Passesmade);
@@ -196,9 +222,11 @@ namespace EAFCMatchTracker.Dtos
                         GoalAccuracyPercent = shots > 0 ? goals * 100.0 / shots : 0
                     };
                 })
+                // Se algum clube ficar sem jogadores após o filtro, ele nem entra no GroupBy/Select
                 .OrderByDescending(c => c.MatchesPlayed)
                 .ToList();
         }
+
 
         public static (MatchStatisticsDto Overall, List<PlayerStatisticsDto> Players, List<ClubStatisticsDto> Clubs)
             BuildLimitedForClub(long clubId, IReadOnlyList<MatchEntity> matches)

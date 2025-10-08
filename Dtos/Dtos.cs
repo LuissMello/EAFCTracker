@@ -165,6 +165,7 @@ public class PlayerStatisticsDto
     public string? ProOverallStr { get; set; }
     public int? ProHeight { get; set; }
     public string? ProName { get; set; }
+    public bool Disconnected { get; set; }
 }
 
 public class ClubStatisticsDto
