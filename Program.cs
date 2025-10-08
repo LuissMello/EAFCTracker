@@ -21,9 +21,6 @@ builder.Services.AddHttpClient<IEAHttpClient, EAHttpClient>()
     .ConfigureHttpClient((sp, client) =>
     {
         var cfg = sp.GetRequiredService<IConfiguration>();
-        var baseUrl = cfg["EAFCSettings:BaseUrl"];
-        if (!string.IsNullOrWhiteSpace(baseUrl))
-            client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
         client.Timeout = TimeSpan.FromSeconds(60);
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         client.DefaultRequestHeaders.AcceptEncoding.ParseAdd("gzip, deflate, br");
