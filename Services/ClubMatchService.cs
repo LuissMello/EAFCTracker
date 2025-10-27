@@ -1,6 +1,7 @@
 ﻿using EAFCMatchTracker.Infrastructure.Http;
 using EAFCMatchTracker.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -13,13 +14,16 @@ public class ClubMatchService : IClubMatchService
     private readonly IEAHttpClient _eaHttpClient;
     private readonly IConfiguration _config;
     private readonly EAFCContext _db;
+    private readonly ILogger<ClubMatchService> _logger;
     private readonly JsonSerializerOptions _jsonOpts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-    public ClubMatchService(IEAHttpClient backend, IConfiguration config, EAFCContext db)
+
+    public ClubMatchService(IEAHttpClient backend, IConfiguration config, EAFCContext db, ILogger<ClubMatchService> logger)
     {
         _eaHttpClient = backend;
         _config = config;
         _db = db;
+        _logger = logger;
     }
 
     public async Task FetchAndStoreMatchesAsync(string clubId, string matchType, CancellationToken ct)
@@ -50,7 +54,13 @@ public class ClubMatchService : IClubMatchService
             .Select(id => idMap[id])
             .ToList();
 
-        if (newMatches.Count == 0) return;
+        if (newMatches.Count == 0)
+        {
+            _logger.LogInformation("No new matches found for club {ClubId} matchType {MatchType}", clubId, matchType);
+            return;
+        }
+
+        _logger.LogInformation("Found {NewMatchesCount} new matches for club {ClubId} matchType {MatchType}", newMatches.Count, clubId, matchType);
 
         foreach (var match in newMatches)
         {
@@ -69,6 +79,7 @@ public class ClubMatchService : IClubMatchService
             throw new InvalidOperationException("EAFCSettings:ClubMatchesEndpoint não configurado.");
 
         var endpoint = BuildUri(baseUrl, string.Format(endpointTemplate, clubId, matchType));
+        _logger.LogInformation("Built URI: {Uri}", endpoint);
 
         var json = await _eaHttpClient.GetStringAsync(endpoint, ct);
         if (json is null) return new List<Match>();
@@ -111,6 +122,7 @@ public class ClubMatchService : IClubMatchService
         var searchTpl = _config["EAFCSettings:SearchClubsEndpoint"] ?? "/allTimeLeaderboard/search?platform=common-gen5&clubName={0}";
 
         var uri = BuildUri(baseUrl, string.Format(searchTpl, Uri.EscapeDataString(clubName)));
+        _logger.LogInformation("Built URI: {Uri}", uri);
 
         var json = await _eaHttpClient.GetStringAsync(uri, ct);
         if (json is null) return null;
@@ -130,6 +142,7 @@ public class ClubMatchService : IClubMatchService
         var membersTpl = _config["EAFCSettings:MembersStatsEndpoint"] ?? "/members/stats?platform=common-gen5&clubId={0}";
 
         var uri = BuildUri(baseUrl, string.Format(membersTpl, clubId));
+        _logger.LogInformation("Built URI: {Uri}", uri);
 
         var json = await _eaHttpClient.GetStringAsync(uri, ct);
         if (json is null) return null;
@@ -142,6 +155,8 @@ public class ClubMatchService : IClubMatchService
         var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
         var overallTpl = _config["EAFCSettings:OverallStatsEndpoint"] ?? _config["OverallStatsEndpoint"] ?? "/clubs/overallStats?platform=common-gen5&clubIds={0}";
         var overallUri = BuildUri(baseUrl, string.Format(overallTpl, clubId));
+        _logger.LogInformation("Built URI: {Uri}", overallUri);
+
         var json = await _eaHttpClient.GetStringAsync(overallUri, ct);
         if (string.IsNullOrWhiteSpace(json)) return null;
 
@@ -161,6 +176,8 @@ public class ClubMatchService : IClubMatchService
         var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
         var playoffsTpl = _config["EAFCSettings:PlayoffAchievementsEndpoint"] ?? _config["PlayoffAchievementsEndpoint"] ?? "/club/playoffAchievements?platform=common-gen5&clubId={0}";
         var uri = BuildUri(baseUrl, string.Format(playoffsTpl, clubId));
+        _logger.LogInformation("Built URI: {Uri}", uri);
+
         var json = await _eaHttpClient.GetStringAsync(uri, ct);
         if (string.IsNullOrWhiteSpace(json)) return null;
 
@@ -177,7 +194,9 @@ public class ClubMatchService : IClubMatchService
     private static Uri BuildUri(string baseUrl, string relative)
     {
         var root = new Uri(baseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        return new Uri(root, relative.TrimStart('/'));
+        var uri = new Uri(root, relative.TrimStart('/'));
+
+        return uri;
     }
 
     private static int? ToNullableInt(string? s) => int.TryParse(s, out var v) ? v : (int?)null;
