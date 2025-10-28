@@ -718,6 +718,12 @@ public class MaintenanceController : ControllerBase
         public string? proName { get; set; }
     }
 
+    [HttpGet("myip")]
+    public async Task<string> GetMyIp()
+    {
+        using var http = new HttpClient();
+        return await http.GetStringAsync("https://api.ipify.org");
+    }
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"];
