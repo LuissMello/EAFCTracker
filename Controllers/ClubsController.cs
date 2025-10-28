@@ -363,6 +363,177 @@ public class ClubsController : ControllerBase
         }
     }
 
+    // GET /api/Clubs/matches/statistics/by-date-range-grouped?clubIds=355651,352016&start=2025-10-01&end=2025-10-31
+    [HttpGet("matches/statistics/by-date-range-grouped")]
+    public async Task<IActionResult> GetMatchStatisticsByDateRangeGrouped_Multi(
+        [FromQuery] string clubIds,
+        [FromQuery] DateTime start,
+        [FromQuery] DateTime end,
+        [FromQuery] int? opponentCount,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation(
+            "GetMatchStatisticsByDateRangeGrouped_Multi clubIds={ClubIds}, start={Start}, end={End}, opponentCount={OpponentCount}",
+            clubIds, start, end, opponentCount);
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(clubIds))
+                return BadRequest("Informe 'clubIds' (ex.: 355651,352016).");
+            if (start == default || end == default)
+                return BadRequest("Informe 'start' e 'end' válidos (YYYY-MM-DD).");
+            if (end < start)
+                return BadRequest("'end' deve ser maior ou igual a 'start'.");
+
+            var ids = clubIds
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => long.TryParse(s, out var v) ? (long?)v : null)
+                .Where(v => v.HasValue && v.Value > 0)
+                .Select(v => v!.Value)
+                .Distinct()
+                .ToList();
+            if (ids.Count == 0)
+                return BadRequest("Nenhum clubId válido em 'clubIds'.");
+
+            bool applyOpponentFilter = opponentCount.HasValue && ids.Count == 1;
+            if (applyOpponentFilter)
+            {
+                opponentCount = ClampOpp(opponentCount!.Value);
+                if (opponentCount is < MinOpponentPlayers or > MaxOpponentPlayers)
+                    return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
+            }
+
+            var startUtc = DateTime.SpecifyKind(start.Date, DateTimeKind.Utc);
+            var endExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
+
+            var q = _db.Matches
+                .AsNoTracking()
+                .Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .Where(m => m.Clubs.Any(c => ids.Contains(c.ClubId)))
+                .Where(m => m.Timestamp >= startUtc && m.Timestamp < endExclusiveUtc);
+
+            if (applyOpponentFilter)
+            {
+                q = ApplyOpponentFilter(q, ids[0], opponentCount);
+            }
+
+            var matches = await q.OrderBy(m => m.Timestamp).ToListAsync(ct);
+            if (matches.Count == 0)
+                return Ok(Array.Empty<FullMatchStatisticsByDayDto>());
+
+            var grouped = matches
+                .GroupBy(m => m.Timestamp.Date)
+                .Select(g =>
+                {
+                    var dayMatches = g.ToList();
+
+                    var dayPlayers = dayMatches
+                        .SelectMany(m => m.MatchPlayers)
+                        .Where(mp => ids.Contains(mp.ClubId))
+                        .ToList();
+
+                    if (dayPlayers.Count == 0)
+                        return new FullMatchStatisticsByDayDto
+                        {
+                            Date = DateOnly.FromDateTime(g.Key),
+                            Statistics = new FullMatchStatisticsDto()
+                        };
+
+                    var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(dayPlayers);
+                    var clubStats = StatsAggregator.BuildSingleClubFromPlayers(dayPlayers, "Clubes agrupados");
+
+                    // Calcula métricas iguais ao /limited
+                    var totalRows = dayPlayers.Count;
+                    var totalGoals = playerStats.Sum(p => p.TotalGoals);
+                    var totalAssists = playerStats.Sum(p => p.TotalAssists);
+                    var totalShots = playerStats.Sum(p => p.TotalShots);
+                    var totalPassesMade = playerStats.Sum(p => p.TotalPassesMade);
+                    var totalPassAttempts = playerStats.Sum(p => p.TotalPassAttempts);
+                    var totalTacklesMade = playerStats.Sum(p => p.TotalTacklesMade);
+                    var totalTackleAttempts = playerStats.Sum(p => p.TotalTackleAttempts);
+                    var totalRating = dayPlayers.Sum(p => p.Rating);
+                    var totalWins = playerStats.Sum(p => p.TotalWins);
+                    var totalLosses = playerStats.Sum(p => p.TotalLosses);
+                    var totalDraws = playerStats.Sum(p => p.TotalDraws);
+                    var totalCleanSheets = playerStats.Sum(p => p.TotalCleanSheets);
+                    var totalRedCards = playerStats.Sum(p => p.TotalRedCards);
+                    var totalSaves = playerStats.Sum(p => p.TotalSaves);
+                    var totalMom = playerStats.Sum(p => p.TotalMom);
+                    var distinctPlayers = playerStats.Count;
+
+                    var overall = new MatchStatisticsDto
+                    {
+                        TotalMatches = dayMatches.Count,
+                        TotalPlayers = distinctPlayers,
+                        TotalGoals = totalGoals,
+                        TotalAssists = totalAssists,
+                        TotalShots = totalShots,
+                        TotalPassesMade = totalPassesMade,
+                        TotalPassAttempts = totalPassAttempts,
+                        TotalTacklesMade = totalTacklesMade,
+                        TotalTackleAttempts = totalTackleAttempts,
+                        TotalRating = totalRating,
+                        TotalWins = totalWins,
+                        TotalLosses = totalLosses,
+                        TotalDraws = totalDraws,
+                        TotalCleanSheets = totalCleanSheets,
+                        TotalRedCards = totalRedCards,
+                        TotalSaves = totalSaves,
+                        TotalMom = totalMom,
+                        AvgGoals = totalRows > 0 ? totalGoals / (double)totalRows : 0,
+                        AvgAssists = totalRows > 0 ? totalAssists / (double)totalRows : 0,
+                        AvgShots = totalRows > 0 ? totalShots / (double)totalRows : 0,
+                        AvgPassesMade = totalRows > 0 ? totalPassesMade / (double)totalRows : 0,
+                        AvgPassAttempts = totalRows > 0 ? totalPassAttempts / (double)totalRows : 0,
+                        AvgTacklesMade = totalRows > 0 ? totalTacklesMade / (double)totalRows : 0,
+                        AvgTackleAttempts = totalRows > 0 ? totalTackleAttempts / (double)totalRows : 0,
+                        AvgRating = totalRows > 0 ? totalRating / totalRows : 0,
+                        AvgRedCards = totalRows > 0 ? totalRedCards / (double)totalRows : 0,
+                        AvgSaves = totalRows > 0 ? totalSaves / (double)totalRows : 0,
+                        AvgMom = totalRows > 0 ? totalMom / (double)totalRows : 0,
+                        WinPercent = totalRows > 0 ? totalWins * 100.0 / totalRows : 0,
+                        LossPercent = totalRows > 0 ? totalLosses * 100.0 / totalRows : 0,
+                        DrawPercent = totalRows > 0 ? totalDraws * 100.0 / totalRows : 0,
+                        CleanSheetsPercent = totalRows > 0 ? totalCleanSheets * 100.0 / totalRows : 0,
+                        MomPercent = totalRows > 0 ? totalMom * 100.0 / totalRows : 0,
+                        PassAccuracyPercent = totalPassAttempts > 0 ? totalPassesMade * 100.0 / totalPassAttempts : 0,
+                        TackleSuccessPercent = totalTackleAttempts > 0 ? totalTacklesMade * 100.0 / totalTackleAttempts : 0,
+                        GoalAccuracyPercent = totalShots > 0 ? totalGoals * 100.0 / totalShots : 0
+                    };
+
+                    return new FullMatchStatisticsByDayDto
+                    {
+                        Date = DateOnly.FromDateTime(g.Key),
+                        Statistics = new FullMatchStatisticsDto
+                        {
+                            Overall = overall,
+                            Players = playerStats,
+                            Clubs = new[] { clubStats }.ToList()
+                        }
+                    };
+                })
+                .OrderBy(x => x.Date)
+                .ToList();
+
+            return Ok(grouped);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetMatchStatisticsByDateRangeGrouped_Multi");
+            return StatusCode(500, "Erro interno ao buscar estatísticas por período.");
+        }
+    }
+
+
+
+    public sealed class FullMatchStatisticsByDayDto
+    {
+        public DateOnly Date { get; set; }
+        public FullMatchStatisticsDto Statistics { get; set; } = new();
+    }
+
+
     [HttpGet("{clubId:long}/matches/results")]
     public async Task<ActionResult<List<MatchResultDto>>> GetMatchResults(
         long clubId,
