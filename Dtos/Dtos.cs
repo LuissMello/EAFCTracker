@@ -197,6 +197,8 @@ public class ClubStatisticsDto
     public double PassAccuracyPercent { get; set; }
     public double TackleSuccessPercent { get; set; }
     public double GoalAccuracyPercent { get; set; }
+    public int GoalsFor { get; internal set; }
+    public int GoalsAgainst { get; internal set; }
 }
 
 public class MatchStatisticsDto

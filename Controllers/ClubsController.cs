@@ -423,98 +423,101 @@ public class ClubsController : ControllerBase
                 return Ok(Array.Empty<FullMatchStatisticsByDayDto>());
 
             var grouped = matches
-                .GroupBy(m => m.Timestamp.Date)
-                .Select(g =>
-                {
-                    var dayMatches = g.ToList();
+    .GroupBy(m => m.Timestamp.Date)
+    .Select(g =>
+    {
+        var dayMatches = g.ToList();
 
-                    var dayPlayers = dayMatches
-                        .SelectMany(m => m.MatchPlayers)
-                        .Where(mp => ids.Contains(mp.ClubId))
-                        .ToList();
+        // players somente dos clubes selecionados
+        var dayPlayers = dayMatches
+            .SelectMany(m => m.MatchPlayers)
+            .Where(mp => ids.Contains(mp.ClubId))
+            .ToList();
 
-                    if (dayPlayers.Count == 0)
-                        return new FullMatchStatisticsByDayDto
-                        {
-                            Date = DateOnly.FromDateTime(g.Key),
-                            Statistics = new FullMatchStatisticsDto()
-                        };
+        var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(dayPlayers);
+        var clubStats = StatsAggregator.BuildSingleClubFromPlayers(dayPlayers, "Clubes agrupados");
 
-                    var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(dayPlayers);
-                    var clubStats = StatsAggregator.BuildSingleClubFromPlayers(dayPlayers, "Clubes agrupados");
+        // ✅ calcula GF/GA e W/D/L com base nas PARTIDAS (não nos jogadores)
+        var (gf, ga) = ComputeGoalsForAgainst(dayMatches, ids);
+        var (wins, draws, losses, countedMatches) = ComputeWinsDrawsLosses(dayMatches, ids);
 
-                    // Calcula métricas iguais ao /limited
-                    var totalRows = dayPlayers.Count;
-                    var totalGoals = playerStats.Sum(p => p.TotalGoals);
-                    var totalAssists = playerStats.Sum(p => p.TotalAssists);
-                    var totalShots = playerStats.Sum(p => p.TotalShots);
-                    var totalPassesMade = playerStats.Sum(p => p.TotalPassesMade);
-                    var totalPassAttempts = playerStats.Sum(p => p.TotalPassAttempts);
-                    var totalTacklesMade = playerStats.Sum(p => p.TotalTacklesMade);
-                    var totalTackleAttempts = playerStats.Sum(p => p.TotalTackleAttempts);
-                    var totalRating = dayPlayers.Sum(p => p.Rating);
-                    var totalWins = playerStats.Sum(p => p.TotalWins);
-                    var totalLosses = playerStats.Sum(p => p.TotalLosses);
-                    var totalDraws = playerStats.Sum(p => p.TotalDraws);
-                    var totalCleanSheets = playerStats.Sum(p => p.TotalCleanSheets);
-                    var totalRedCards = playerStats.Sum(p => p.TotalRedCards);
-                    var totalSaves = playerStats.Sum(p => p.TotalSaves);
-                    var totalMom = playerStats.Sum(p => p.TotalMom);
-                    var distinctPlayers = playerStats.Count;
+        // totais "por jogador" continuam para as demais métricas (gols, passes, etc.)
+        var totalRows = dayPlayers.Count;
+        var totalGoals = playerStats.Sum(p => p.TotalGoals);
+        var totalAssists = playerStats.Sum(p => p.TotalAssists);
+        var totalShots = playerStats.Sum(p => p.TotalShots);
+        var totalPassesMade = playerStats.Sum(p => p.TotalPassesMade);
+        var totalPassAttempts = playerStats.Sum(p => p.TotalPassAttempts);
+        var totalTacklesMade = playerStats.Sum(p => p.TotalTacklesMade);
+        var totalTackleAttempts = playerStats.Sum(p => p.TotalTackleAttempts);
+        var totalRating = dayPlayers.Sum(p => p.Rating);
+        var totalCleanSheets = playerStats.Sum(p => p.TotalCleanSheets);
+        var totalRedCards = playerStats.Sum(p => p.TotalRedCards);
+        var totalSaves = playerStats.Sum(p => p.TotalSaves);
+        var totalMom = playerStats.Sum(p => p.TotalMom);
+        var distinctPlayers = playerStats.Count;
 
-                    var overall = new MatchStatisticsDto
-                    {
-                        TotalMatches = dayMatches.Count,
-                        TotalPlayers = distinctPlayers,
-                        TotalGoals = totalGoals,
-                        TotalAssists = totalAssists,
-                        TotalShots = totalShots,
-                        TotalPassesMade = totalPassesMade,
-                        TotalPassAttempts = totalPassAttempts,
-                        TotalTacklesMade = totalTacklesMade,
-                        TotalTackleAttempts = totalTackleAttempts,
-                        TotalRating = totalRating,
-                        TotalWins = totalWins,
-                        TotalLosses = totalLosses,
-                        TotalDraws = totalDraws,
-                        TotalCleanSheets = totalCleanSheets,
-                        TotalRedCards = totalRedCards,
-                        TotalSaves = totalSaves,
-                        TotalMom = totalMom,
-                        AvgGoals = totalRows > 0 ? totalGoals / (double)totalRows : 0,
-                        AvgAssists = totalRows > 0 ? totalAssists / (double)totalRows : 0,
-                        AvgShots = totalRows > 0 ? totalShots / (double)totalRows : 0,
-                        AvgPassesMade = totalRows > 0 ? totalPassesMade / (double)totalRows : 0,
-                        AvgPassAttempts = totalRows > 0 ? totalPassAttempts / (double)totalRows : 0,
-                        AvgTacklesMade = totalRows > 0 ? totalTacklesMade / (double)totalRows : 0,
-                        AvgTackleAttempts = totalRows > 0 ? totalTackleAttempts / (double)totalRows : 0,
-                        AvgRating = totalRows > 0 ? totalRating / totalRows : 0,
-                        AvgRedCards = totalRows > 0 ? totalRedCards / (double)totalRows : 0,
-                        AvgSaves = totalRows > 0 ? totalSaves / (double)totalRows : 0,
-                        AvgMom = totalRows > 0 ? totalMom / (double)totalRows : 0,
-                        WinPercent = totalRows > 0 ? totalWins * 100.0 / totalRows : 0,
-                        LossPercent = totalRows > 0 ? totalLosses * 100.0 / totalRows : 0,
-                        DrawPercent = totalRows > 0 ? totalDraws * 100.0 / totalRows : 0,
-                        CleanSheetsPercent = totalRows > 0 ? totalCleanSheets * 100.0 / totalRows : 0,
-                        MomPercent = totalRows > 0 ? totalMom * 100.0 / totalRows : 0,
-                        PassAccuracyPercent = totalPassAttempts > 0 ? totalPassesMade * 100.0 / totalPassAttempts : 0,
-                        TackleSuccessPercent = totalTackleAttempts > 0 ? totalTacklesMade * 100.0 / totalTackleAttempts : 0,
-                        GoalAccuracyPercent = totalShots > 0 ? totalGoals * 100.0 / totalShots : 0
-                    };
+        // ✅ usa wins/draws/losses calculados por PARTIDA
+        var overall = new MatchStatisticsDto
+        {
+            TotalMatches = countedMatches,   // ou dayMatches.Count, se preferir contar também jogos "grupo x grupo"
+            TotalPlayers = distinctPlayers,
 
-                    return new FullMatchStatisticsByDayDto
-                    {
-                        Date = DateOnly.FromDateTime(g.Key),
-                        Statistics = new FullMatchStatisticsDto
-                        {
-                            Overall = overall,
-                            Players = playerStats,
-                            Clubs = new[] { clubStats }.ToList()
-                        }
-                    };
-                })
-                .OrderBy(x => x.Date)
-                .ToList();
+            TotalGoals = totalGoals,
+            TotalAssists = totalAssists,
+            TotalShots = totalShots,
+            TotalPassesMade = totalPassesMade,
+            TotalPassAttempts = totalPassAttempts,
+            TotalTacklesMade = totalTacklesMade,
+            TotalTackleAttempts = totalTackleAttempts,
+            TotalRating = totalRating,
+
+            // ✅ estes 3 agora NÃO somam por jogador
+            TotalWins = wins,
+            TotalLosses = losses,
+            TotalDraws = draws,
+
+            TotalCleanSheets = totalCleanSheets,
+            TotalRedCards = totalRedCards,
+            TotalSaves = totalSaves,
+            TotalMom = totalMom,
+
+            AvgGoals = totalRows > 0 ? totalGoals / (double)totalRows : 0,
+            AvgAssists = totalRows > 0 ? totalAssists / (double)totalRows : 0,
+            AvgShots = totalRows > 0 ? totalShots / (double)totalRows : 0,
+            AvgPassesMade = totalRows > 0 ? totalPassesMade / (double)totalRows : 0,
+            AvgPassAttempts = totalRows > 0 ? totalPassAttempts / (double)totalRows : 0,
+            AvgTacklesMade = totalRows > 0 ? totalTacklesMade / (double)totalRows : 0,
+            AvgTackleAttempts = totalRows > 0 ? totalTackleAttempts / (double)totalRows : 0,
+            AvgRating = totalRows > 0 ? totalRating / totalRows : 0,
+            AvgRedCards = totalRows > 0 ? totalRedCards / (double)totalRows : 0,
+            AvgSaves = totalRows > 0 ? totalSaves / (double)totalRows : 0,
+            AvgMom = totalRows > 0 ? totalMom / (double)totalRows : 0,
+            WinPercent = countedMatches > 0 ? wins * 100.0 / countedMatches : 0,
+            LossPercent = countedMatches > 0 ? losses * 100.0 / countedMatches : 0,
+            DrawPercent = countedMatches > 0 ? draws * 100.0 / countedMatches : 0,
+            PassAccuracyPercent = totalPassAttempts > 0 ? totalPassesMade * 100.0 / totalPassAttempts : 0,
+            TackleSuccessPercent = totalTackleAttempts > 0 ? totalTacklesMade * 100.0 / totalTackleAttempts : 0,
+            GoalAccuracyPercent = totalShots > 0 ? totalGoals * 100.0 / totalShots : 0
+        };
+
+        // opcional: preencher GF/GA no clube agregado do dia
+        clubStats.GoalsFor = gf;
+        clubStats.GoalsAgainst = ga;
+
+        return new FullMatchStatisticsByDayDto
+        {
+            Date = DateOnly.FromDateTime(g.Key),
+            Statistics = new FullMatchStatisticsDto
+            {
+                Overall = overall,
+                Players = playerStats,
+                Clubs = new[] { clubStats }.ToList()
+            }
+        };
+    })
+    .OrderBy(x => x.Date)
+    .ToList();
 
             return Ok(grouped);
         }
@@ -525,7 +528,47 @@ public class ClubsController : ControllerBase
         }
     }
 
+    private static (int gf, int ga) ComputeGoalsForAgainst(IEnumerable<MatchEntity> matches, IReadOnlyCollection<long> ids)
+    {
+        int gf = 0, ga = 0;
 
+        foreach (var m in matches)
+        {
+            // gols feitos pelos clubes selecionados
+            var ourGoals = m.Clubs.Where(c => ids.Contains(c.ClubId)).Sum(c => c.Goals);
+            // gols sofridos (gols dos adversários)
+            var oppGoals = m.Clubs.Where(c => !ids.Contains(c.ClubId)).Sum(c => c.Goals);
+
+            gf += ourGoals;
+            ga += oppGoals;
+        }
+
+        return (gf, ga);
+    }
+
+    private static (int wins, int draws, int losses, int counted) ComputeWinsDrawsLosses(IEnumerable<MatchEntity> matches, IReadOnlyCollection<long> ids)
+    {
+        int wins = 0, draws = 0, losses = 0, counted = 0;
+
+        foreach (var m in matches)
+        {
+            // Só conta partidas onde exatamente 1 clube do grupo participou (evita contar "grupo x grupo")
+            int ourTeamsInThisMatch = m.Clubs.Count(c => ids.Contains(c.ClubId));
+            if (ourTeamsInThisMatch != 1)
+                continue;
+
+            int ourGoals = m.Clubs.Where(c => ids.Contains(c.ClubId)).Sum(c => c.Goals);
+            int oppGoals = m.Clubs.Where(c => !ids.Contains(c.ClubId)).Sum(c => c.Goals);
+
+            if (ourGoals > oppGoals) wins++;
+            else if (ourGoals < oppGoals) losses++;
+            else draws++;
+
+            counted++;
+        }
+
+        return (wins, draws, losses, counted);
+    }
 
     public sealed class FullMatchStatisticsByDayDto
     {
