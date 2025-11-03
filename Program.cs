@@ -1,14 +1,31 @@
 using EAFCMatchTracker.Infrastructure.Http;
 using EAFCMatchTracker.Services;
 using EAFCMatchTracker.Services.Interfaces;
+
 using Microsoft.AspNetCore.Localization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
+
 using System.Globalization;
 using System.Net;
 
+// ===== Telemetria (Application Insights via OpenTelemetry - Azure Monitor) =====
+using Azure.Monitor.OpenTelemetry.AspNetCore;
+using OpenTelemetry.Resources;
+
 var builder = WebApplication.CreateBuilder(args);
+
+// -------- OpenTelemetry / Azure Monitor --------
+// Define o nome do serviço como aparecerá no Application Insights (Application Map, etc.)
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(
+        serviceName: "EAFCTracker-API",
+        serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0"))
+    .UseAzureMonitor(); // habilita traces, requests, dependencies, logs e métricas
+
+// OBS: Para forçar aparecer tudo em testes, você pode definir no App Service:
+// OTEL_TRACES_SAMPLER = always_on
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -86,12 +103,13 @@ builder.Services.AddDbContext<EAFCContext>(options =>
                 errorCodesToAdd: null);
         });
 
+        // Logs úteis para troubleshooting de DB (irão para ILogger -> OpenTelemetry -> AI)
         options.EnableSensitiveDataLogging();
         options.LogTo(Console.WriteLine, LogLevel.Information);
     }
 });
 
-builder.Services.AddScoped<IClubMatchService, ClubMatchService>();
+// (Removido o segundo AddScoped<IClubMatchService, ClubMatchService>(); — estava duplicado)
 
 var app = builder.Build();
 
@@ -101,6 +119,7 @@ CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.GetCultureInfo("pt-BR");
 var locOptions = app.Services.GetRequiredService<IOptions<RequestLocalizationOptions>>();
 app.UseRequestLocalization(locOptions.Value);
 
+// Middleware de guarda de cultura
 app.Use(async (context, next) =>
 {
     try
@@ -125,7 +144,6 @@ AppDomain.CurrentDomain.FirstChanceException += (sender, eventArgs) =>
         Console.WriteLine($"[Culture Guard] CultureNotFoundException capturada: {cex.Message}");
     }
 };
-
 
 if (!useInMemory)
 {
