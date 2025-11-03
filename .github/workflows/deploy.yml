@@ -1,9 +1,15 @@
-name: Build and Deploy .NET API to Azure
+name: Deploy to Azure Web App (.NET 8)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+env:
+  AZURE_WEBAPP_NAME: EAFCTracker          # <- confirme o nome exato do App Service
+  DOTNET_VERSION: "8.0.x"
+  PROJECT_PATH: ./EAFCMatchTracker.csproj # <- ajuste se o .csproj não estiver na raiz
+  PUBLISH_DIR: ./publish
 
 jobs:
   build-and-deploy:
@@ -11,22 +17,32 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v3
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Build
-        run: dotnet build --configuration Release
+      - name: Restore
+        run: dotnet restore ${{ env.PROJECT_PATH }}
+
+      - name: Build (Release)
+        run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
 
       - name: Publish
-        run: dotnet publish --configuration Release --output ./publish
+        run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --output ${{ env.PUBLISH_DIR }} --no-build
+
+      - name: Zip artifact
+        run: |
+          cd ${{ env.PUBLISH_DIR }}
+          zip -r ../app.zip .
+          echo "PACKAGE_PATH=$(pwd)/../app.zip" >> $GITHUB_ENV
 
       - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@v3
         with:
-          app-name: EAFCTracker
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: ./publish
+          package: ${{ env.PACKAGE_PATH }}
+          # slot-name: staging   # (opcional) se usar slot
