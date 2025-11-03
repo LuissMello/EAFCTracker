@@ -576,18 +576,38 @@ public class ClubsController : ControllerBase
         public FullMatchStatisticsDto Statistics { get; set; } = new();
     }
 
+    public sealed class PagedResult<T>
+    {
+        public int Page { get; init; }
+        public int PageSize { get; init; }
+        public int TotalCount { get; init; }
+        public int TotalPages { get; init; }
+        public bool HasPrevious { get; init; }
+        public bool HasNext { get; init; }
+        public IReadOnlyList<T> Items { get; init; } = Array.Empty<T>();
+    }
 
     [HttpGet("{clubId:long}/matches/results")]
-    public async Task<ActionResult<List<MatchResultDto>>> GetMatchResults(
-        long clubId,
-        [FromQuery] MatchType matchType = MatchType.All,
-        [FromQuery] int? opponentCount = null,
-        CancellationToken ct = default)
+    public async Task<ActionResult<PagedResult<MatchResultDto>>> GetMatchResults(
+    long clubId,
+    [FromQuery] MatchType matchType = MatchType.All,
+    [FromQuery] int? opponentCount = null,
+    [FromQuery] int page = 1,
+    [FromQuery] int pageSize = 50,
+    CancellationToken ct = default)
     {
-        _logger.LogInformation("GetMatchResults called for clubId={ClubId}, matchType={MatchType}, opponentCount={OpponentCount}", clubId, matchType, opponentCount);
+        _logger.LogInformation("GetMatchResults called for clubId={ClubId}, matchType={MatchType}, opponentCount={OpponentCount}, page={Page}, pageSize={PageSize}",
+            clubId, matchType, opponentCount, page, pageSize);
+
         try
         {
             if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+
+            // sane defaults/limits
+            if (page < 1) page = 1;
+            const int MaxPageSize = 200;
+            if (pageSize < 1) pageSize = 50;
+            if (pageSize > MaxPageSize) pageSize = MaxPageSize;
 
             opponentCount = ReadOppAliasOrNull(Request, opponentCount);
             if (opponentCount.HasValue)
@@ -597,16 +617,29 @@ public class ClubsController : ControllerBase
                     return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
             }
 
-            var q = _db.Matches.AsNoTracking().Where(m => m.Clubs.Any(c => c.ClubId == clubId));
+            // base query (sem Include para o Count)
+            IQueryable<MatchEntity> q = _db.Matches.AsNoTracking()
+                .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
+
             if (matchType == MatchType.League) q = q.Where(m => m.MatchType == MatchType.League);
             else if (matchType == MatchType.Playoff) q = q.Where(m => m.MatchType == MatchType.Playoff);
+
             q = ApplyOpponentFilter(q, clubId, opponentCount);
 
+            var totalCount = await q.CountAsync(ct);
+            var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+
+            // Se a página pedida ultrapassar o total, retornamos página vazia mas com metadados corretos
+            var skip = (page - 1) * pageSize;
+
             var matches = await q
+                .OrderByDescending(m => m.Timestamp)
+                .ThenByDescending(m => m.MatchId)
+                .Skip(skip)
+                .Take(pageSize)
                 .Include(m => m.Clubs).ThenInclude(c => c.Details)
                 .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
                 .AsNoTracking()
-                .OrderByDescending(m => m.Timestamp)
                 .ToListAsync(ct);
 
             var allClubIds = matches
@@ -620,7 +653,7 @@ public class ClubsController : ControllerBase
                 .Select(os => new { os.ClubId, os.CurrentDivision })
                 .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct);
 
-            var result = new List<MatchResultDto>(matches.Count);
+            var items = new List<MatchResultDto>(matches.Count);
 
             foreach (var match in matches)
             {
@@ -669,10 +702,21 @@ public class ClubsController : ControllerBase
                 if (dto.ClubBDetails != null && divByClub.TryGetValue(b.ClubId, out var divB))
                     dto.ClubBDetails.CurrentDivision = divB;
 
-                result.Add(dto);
+                items.Add(dto);
             }
 
-            return Ok(result);
+            var payload = new PagedResult<MatchResultDto>
+            {
+                Page = page,
+                PageSize = pageSize,
+                TotalCount = totalCount,
+                TotalPages = totalPages,
+                HasPrevious = page > 1 && totalPages > 0,
+                HasNext = page < totalPages,
+                Items = items
+            };
+
+            return Ok(payload);
         }
         catch (Exception ex)
         {
@@ -680,6 +724,7 @@ public class ClubsController : ControllerBase
             return StatusCode(500, "Erro interno ao buscar resultados das partidas.");
         }
     }
+
 
     [HttpDelete("{clubId:long}/matches")]
     public async Task<IActionResult> DeleteMatchesByClub(long clubId, CancellationToken ct)
