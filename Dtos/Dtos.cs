@@ -135,6 +135,7 @@ public class MatchPlayerStatsDto
 
 public class PlayerStatisticsDto
 {
+    public DateTime Date { get; set; }
     public long PlayerId { get; set; }
     public string PlayerName { get; set; }
     public long ClubId { get; set; }
@@ -166,6 +167,13 @@ public class PlayerStatisticsDto
     public int? ProHeight { get; set; }
     public string? ProName { get; set; }
     public bool Disconnected { get; set; }
+}
+
+public class PlayerStatisticsByDayDto
+{
+    public DateOnly Date { get; set; }
+
+    public List<PlayerStatisticsDto> Statistics { get; set; } = new();
 }
 
 public class ClubStatisticsDto

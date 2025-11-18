@@ -576,6 +576,114 @@ public class ClubsController : ControllerBase
         public FullMatchStatisticsDto Statistics { get; set; } = new();
     }
 
+    // GET /api/Players/matches/statistics/by-date-range-grouped?playerId=123&clubIds=355651,352016&start=2025-10-01&end=2025-10-31
+    [HttpGet("matches/statistics/player/by-date-range-grouped")]
+    public async Task<IActionResult> GetPlayerMatchStatisticsByDateRangeGrouped(
+        [FromQuery] long playerId,
+        [FromQuery] string clubIds,
+        [FromQuery] DateTime start,
+        [FromQuery] DateTime end,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation(
+            "GetPlayerMatchStatisticsByDateRangeGrouped playerId={PlayerId}, clubIds={ClubIds}, start={Start}, end={End}",
+            playerId, clubIds, start, end
+        );
+
+        try
+        {
+            if (playerId <= 0)
+                return BadRequest("Informe um playerId válido.");
+
+            if (string.IsNullOrWhiteSpace(clubIds))
+                return BadRequest("Informe 'clubIds' (ex.: 355651,352016).");
+
+            if (start == default || end == default)
+                return BadRequest("Informe 'start' e 'end' válidos (YYYY-MM-DD).");
+
+            if (end < start)
+                return BadRequest("'end' deve ser maior ou igual a 'start'.");
+
+            var ids = clubIds
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => long.TryParse(s, out var v) ? (long?)v : null)
+                .Where(v => v.HasValue && v.Value > 0)
+                .Select(v => v!.Value)
+                .Distinct()
+                .ToList();
+
+            if (ids.Count == 0)
+                return BadRequest("Nenhum clubId válido em 'clubIds'.");
+
+            var startUtc = DateTime.SpecifyKind(start.Date, DateTimeKind.Utc);
+            var endExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
+
+            // Só partidas em que esse jogador participou por um dos clubes informados
+            var q = _db.Matches
+                .AsNoTracking()
+                .Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .Where(m =>
+                    m.MatchPlayers.Any(mp =>
+                        mp.Player.PlayerId == playerId &&
+                        ids.Contains(mp.ClubId)))
+                .Where(m => m.Timestamp >= startUtc && m.Timestamp < endExclusiveUtc);
+
+            var matches = await q.OrderBy(m => m.Timestamp).ToListAsync(ct);
+            if (matches.Count == 0)
+                return Ok(Array.Empty<PlayerStatisticsByDayDto>());
+
+            // Agrupa por dia (UTC)
+            var grouped = matches
+                .GroupBy(m => m.Timestamp.Date)
+                .Select(g =>
+                {
+                    var dayMatches = g.ToList();
+                    var statsPerMatch = new List<PlayerStatisticsDto>();
+
+                    foreach (var match in dayMatches)
+                    {
+                        // MatchPlayers desse jogador nesse jogo (e nesses clubes)
+                        var playerMatchPlayers = match.MatchPlayers
+                            .Where(mp => mp.Player.PlayerId == playerId && ids.Contains(mp.ClubId))
+                            .ToList();
+
+                        if (!playerMatchPlayers.Any())
+                            continue;
+
+                        // Reuso do aggregator para calcular o PlayerStatisticsDto de UM jogo.
+                        // Como estamos passando apenas os MatchPlayers desse jogador, o resultado
+                        // será uma linha com MatchesPlayed ~ 1 e agregados do jogo.
+                        var statsList = StatsAggregator.BuildPerPlayerMergedByGlobalId(playerMatchPlayers);
+                        var stat = statsList.FirstOrDefault();
+                        if (stat != null)
+                        {
+                            // Se quiser, você pode aqui ajustar algum campo (ex.: garantir MatchesPlayed = 1)
+                            // stat.MatchesPlayed = 1;
+
+                            statsPerMatch.Add(stat);
+                        }
+                    }
+
+                    return new PlayerStatisticsByDayDto
+                    {
+                        Date = DateOnly.FromDateTime(g.Key),
+                        Statistics = statsPerMatch
+                    };
+                })
+                .OrderBy(x => x.Date)
+                .ToList();
+
+            return Ok(grouped);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetPlayerMatchStatisticsByDateRangeGrouped");
+            return StatusCode(500, "Erro interno ao buscar estatísticas por jogador e período.");
+        }
+    }
+
+
     public sealed class PagedResult<T>
     {
         public int Page { get; init; }

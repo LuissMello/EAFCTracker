@@ -428,6 +428,7 @@ namespace EAFCMatchTracker.Dtos
                 {
                     // Pega um "representante" — o mais recente por MatchId (maior MatchId) para nome/club fallback
                     var repr = g.OrderByDescending(x => x.MatchId).First();
+                    var matchRepr = repr.Match;
 
                     int matches = g.Count();
                     int goals = g.Sum(p => p.Goals);
@@ -448,6 +449,7 @@ namespace EAFCMatchTracker.Dtos
                         // Como estamos agrupando clubes, não faz sentido devolver um único ClubId real.
                         // Use 0 (ou null se seu DTO permitir) apenas para preencher o contrato atual.
                         ClubId = 0,
+                        Date = matchRepr.Timestamp,
 
                         ProName = repr.ProName,
                         ProOverallStr = repr.ProOverallStr,
