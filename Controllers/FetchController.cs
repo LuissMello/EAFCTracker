@@ -51,27 +51,38 @@ public class FetchController : ControllerBase
             _logger.LogWarning("Nenhum ClubId configurado em EAFCBackgroundWorkerSettings:ClubIds.");
             return BadRequest("Nenhum ClubId configurado em EAFCBackgroundWorkerSettings:ClubIds.");
         }
-
         var types = new[] { "leagueMatch", "playoffMatch" };
         var errors = new List<string>();
 
-        foreach (var cid in clubIds)
+        foreach (var t in types) // primeiro TODOS leagueMatch, depois TODOS playoffMatch
         {
-            foreach (var t in types)
+            foreach (var cid in clubIds)
             {
                 try
                 {
-                    _logger.LogInformation("Buscando e armazenando partidas (ClubId={ClubId}, Type={Type})", cid, t);
+                    _logger.LogInformation(
+                        "Buscando e armazenando partidas (ClubId={ClubId}, Type={Type})",
+                        cid, t
+                    );
+
                     await _matchService.FetchAndStoreMatchesAsync(cid, t, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    _logger.LogWarning("Operação cancelada durante busca/armazenamento (ClubId={ClubId}, Type={Type})", cid, t);
+                    _logger.LogWarning(
+                        "Operação cancelada durante busca/armazenamento (ClubId={ClubId}, Type={Type})",
+                        cid, t
+                    );
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Erro ao buscar/armazenar (ClubId={ClubId}, Type={Type})", cid, t);
+                    _logger.LogError(
+                        ex,
+                        "Erro ao buscar/armazenar (ClubId={ClubId}, Type={Type})",
+                        cid, t
+                    );
+
                     errors.Add($"{cid}:{t} - {ex.Message}");
                 }
             }

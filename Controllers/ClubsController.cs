@@ -950,6 +950,7 @@ public class ClubsController : ControllerBase
                 .AsNoTracking()
                 .Where(p => lastMatchIds.Contains(p.MatchId) && ids.Contains(p.ClubId))
                 .Include(p => p.Player)
+                .Include(p => p.Match)
                 .ToListAsync(ct);
 
             var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(players);

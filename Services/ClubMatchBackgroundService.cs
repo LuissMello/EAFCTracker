@@ -39,25 +39,36 @@ public sealed class ClubMatchBackgroundService : BackgroundService
                 using var scope = _scopeFactory.CreateScope();
                 var svc = scope.ServiceProvider.GetRequiredService<IClubMatchService>();
 
-                foreach (var item in clubIds)
+                // Primeiro todos os leagueMatch para todos os clubes,
+                // depois todos os playoffMatch para todos os clubes, etc.
+                foreach (var matchType in defaultMatchTypes)
                 {
-                    var parts = item.Split(':', StringSplitOptions.TrimEntries);
-                    var clubId = parts[0];
-
-                    foreach (var matchType in defaultMatchTypes)
+                    foreach (var item in clubIds)
                     {
+                        var parts = item.Split(':', StringSplitOptions.TrimEntries);
+                        var clubId = parts[0];
+
                         try
                         {
-                            _logger.LogInformation("Fetching matches for ClubId={ClubId} MatchType={MatchType}", clubId, matchType);
+                            _logger.LogInformation(
+                                "Fetching matches for ClubId={ClubId} MatchType={MatchType}",
+                                clubId, matchType
+                            );
+
                             await svc.FetchAndStoreMatchesAsync(clubId, matchType, stoppingToken);
                         }
                         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                         {
+                            // Mantém o comportamento atual de apenas propagar o cancelamento
                             throw;
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Erro ao buscar partidas para ClubId={ClubId} tipo={MatchType}", clubId, matchType);
+                            _logger.LogError(
+                                ex,
+                                "Erro ao buscar partidas para ClubId={ClubId} tipo={MatchType}",
+                                clubId, matchType
+                            );
                         }
                     }
                 }
@@ -66,6 +77,7 @@ public sealed class ClubMatchBackgroundService : BackgroundService
             {
                 _logger.LogError(ex, "Erro ao executar ClubMatchBackgroundService");
             }
+
 
             try
             {
