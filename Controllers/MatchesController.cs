@@ -305,18 +305,17 @@
 
                 return new MatchGoalItemDto
                 {
-                    MatchGoalLinkId = g.MatchGoalLinkId,
                     MatchId = g.MatchId,
                     ClubId = g.ClubId,
 
                     ScorerPlayerEntityId = g.ScorerPlayerEntityId,
-                    ScorerName = scorer?.PlayerName,
+                    ScorerName = scorer?.ProName,
 
                     AssistPlayerEntityId = g.AssistPlayerEntityId,
-                    AssistName = assist?.PlayerName,
+                    AssistName = assist?.ProName,
 
                     PreAssistPlayerEntityId = g.PreAssistPlayerEntityId,
-                    PreAssistName = preAssist?.PlayerName
+                    PreAssistName = preAssist?.ProName
                 };
             }).ToList()
         };
