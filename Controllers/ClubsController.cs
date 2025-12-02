@@ -198,10 +198,11 @@ public class ClubsController : ControllerBase
         }
     }
 
-    [HttpGet("{clubId:long}/overall-and-playoffs")]
-    public async Task<IActionResult> GetClubOverallAndPlayoffs(long clubId, CancellationToken ct)
+    [HttpGet("{clubId:long}/overall")]
+    public async Task<ActionResult<List<ClubOverallStatsDto>>> GetClubOverall(long clubId, CancellationToken ct)
     {
-        _logger.LogInformation("GetClubOverallAndPlayoffs called for clubId={ClubId}", clubId);
+        _logger.LogInformation("GetClubOverall called for clubId={ClubId}", clubId);
+
         try
         {
             if (clubId <= 0)
@@ -212,26 +213,43 @@ public class ClubsController : ControllerBase
                 .Where(o => o.ClubId == clubId)
                 .ToListAsync(ct);
 
+            var clubsOverall = StatsAggregator.BuildClubsOverall(overallEntities);
+
+            return Ok(clubsOverall);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetClubOverall for clubId={ClubId}", clubId);
+            return StatusCode(500, "Erro interno ao buscar estatísticas gerais.");
+        }
+    }
+
+    [HttpGet("{clubId:long}/playoffs")]
+    public async Task<ActionResult<List<ClubPlayoffAchievementDto>>> GetClubPlayoffs(long clubId, CancellationToken ct)
+    {
+        _logger.LogInformation("GetClubPlayoffs called for clubId={ClubId}", clubId);
+
+        try
+        {
+            if (clubId <= 0)
+                return BadRequest("Informe um clubId válido.");
+
             var playoffEntities = await _db.PlayoffAchievements
                 .AsNoTracking()
                 .Where(p => p.ClubId == clubId)
                 .ToListAsync(ct);
 
-            var clubsOverall = StatsAggregator.BuildClubsOverall(overallEntities);
             var clubsPlayoffAchievements = StatsAggregator.BuildClubsPlayoffAchievements(playoffEntities);
 
-            return Ok(new
-            {
-                ClubsOverall = clubsOverall,
-                ClubsPlayoffAchievements = clubsPlayoffAchievements
-            });
+            return Ok(clubsPlayoffAchievements);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in GetClubOverallAndPlayoffs for clubId={ClubId}", clubId);
-            return StatusCode(500, "Erro interno ao buscar estatísticas gerais e playoffs.");
+            _logger.LogError(ex, "Error in GetClubPlayoffs for clubId={ClubId}", clubId);
+            return StatusCode(500, "Erro interno ao buscar dados de playoffs.");
         }
     }
+
 
     [HttpGet("{clubId:long}/matches/statistics")]
     public async Task<ActionResult<FullMatchStatisticsDto>> GetMatchStatistics(long clubId, CancellationToken ct)
@@ -329,7 +347,7 @@ public class ClubsController : ControllerBase
     }
 
     [HttpGet("{clubId:long}/matches/statistics/limited")]
-    public async Task<IActionResult> GetMatchStatisticsLimited(long clubId, [FromQuery] int? opponentCount, [FromQuery] int count = 10, CancellationToken ct = default)
+    public async Task<ActionResult<FullMatchStatisticsDto>> GetMatchStatisticsLimited(long clubId, [FromQuery] int? opponentCount, [FromQuery] int count = 10, CancellationToken ct = default)
     {
         _logger.LogInformation("GetMatchStatisticsLimited called for clubId={ClubId}, count={Count}, opponentCount={OpponentCount}", clubId, count, opponentCount);
         try
@@ -365,7 +383,7 @@ public class ClubsController : ControllerBase
 
     // GET /api/Clubs/matches/statistics/by-date-range-grouped?clubIds=355651,352016&start=2025-10-01&end=2025-10-31
     [HttpGet("matches/statistics/by-date-range-grouped")]
-    public async Task<IActionResult> GetMatchStatisticsByDateRangeGrouped_Multi(
+    public async Task<ActionResult<List<FullMatchStatisticsByDayDto>>> GetMatchStatisticsByDateRangeGrouped_Multi(
         [FromQuery] string clubIds,
         [FromQuery] DateTime start,
         [FromQuery] DateTime end,
@@ -578,7 +596,7 @@ public class ClubsController : ControllerBase
 
     // GET /api/Players/matches/statistics/by-date-range-grouped?playerId=123&clubIds=355651,352016&start=2025-10-01&end=2025-10-31
     [HttpGet("matches/statistics/player/by-date-range-grouped")]
-    public async Task<IActionResult> GetPlayerMatchStatisticsByDateRangeGrouped(
+    public async Task<ActionResult<List<PlayerStatisticsByDayDto>>> GetPlayerMatchStatisticsByDateRangeGrouped(
         [FromQuery] long playerId,
         [FromQuery] string clubIds,
         [FromQuery] DateTime start,

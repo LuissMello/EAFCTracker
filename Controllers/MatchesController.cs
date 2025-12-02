@@ -64,11 +64,12 @@
         }
 
     [HttpGet("{matchId:long}/statistics")]
-    public async Task<IActionResult> GetMatchStatisticsById(long matchId, CancellationToken ct)
+    public async Task<ActionResult<MatchStatisticsResponseDto>> GetMatchStatisticsById(long matchId, CancellationToken ct)
     {
         try
         {
             _logger.LogInformation("Getting statistics for match: {MatchId}", matchId);
+
             var match = await _db.Matches
                 .AsNoTracking()
                 .Include(m => m.Clubs).ThenInclude(c => c.Details)
@@ -81,20 +82,22 @@
                 return NotFound();
             }
 
-            var overall = StatsAggregator.BuildOverallForSingleMatch(match.MatchPlayers);  
-            var playersStats = StatsAggregator.BuildPerPlayer(match.MatchPlayers, includeDisconnected: true); 
+            var overall = StatsAggregator.BuildOverallForSingleMatch(match.MatchPlayers);
+            var playersStats = StatsAggregator.BuildPerPlayer(match.MatchPlayers, includeDisconnected: true);
             var clubsStats = StatsAggregator.BuildPerClub(
                 match.MatchPlayers,
                 match.Clubs.ToDictionary(c => c.ClubId)
             );
 
-            _logger.LogInformation("Successfully retrieved statistics for match: {MatchId}", matchId);
-            return Ok(new
+            var response = new MatchStatisticsResponseDto
             {
                 Overall = overall,
                 Players = playersStats,
-                Clubs = clubsStats,
-            });
+                Clubs = clubsStats
+            };
+
+            _logger.LogInformation("Successfully retrieved statistics for match: {MatchId}", matchId);
+            return Ok(response);
         }
         catch (Exception ex)
         {
@@ -102,7 +105,6 @@
             return StatusCode(500, "Internal server error.");
         }
     }
-
 
     [HttpGet("{matchId:long}/players/{playerId:long}/statistics")]
         public async Task<ActionResult<MatchPlayerStatsDto>> GetPlayerStatisticsByMatchAndPlayer(long matchId, long playerId, CancellationToken ct)
@@ -268,5 +270,57 @@
         await _db.SaveChangesAsync();
 
         return Ok(new { message = "Goals registered successfully." });
+    }
+
+    [HttpGet("{matchId}/goals")]
+    public async Task<MatchGoalsResponseDto?> GetGoalsByMatchId(long matchId)
+    {
+        var match = await _db.Matches
+            .Include(m => m.MatchPlayers)
+            .FirstOrDefaultAsync(m => m.MatchId == matchId);
+
+        if (match == null)
+            return null;
+
+        var matchPlayers = match.MatchPlayers;
+
+        var goals = await _db.MatchGoalLinks
+            .Where(g => g.MatchId == matchId)
+            .ToListAsync();
+
+        var dto = new MatchGoalsResponseDto
+        {
+            MatchId = matchId,
+            TotalGoals = goals.Count,
+            Goals = goals.Select(g =>
+            {
+                var scorer = matchPlayers.FirstOrDefault(mp => mp.PlayerEntityId == g.ScorerPlayerEntityId);
+                var assist = g.AssistPlayerEntityId.HasValue
+                    ? matchPlayers.FirstOrDefault(mp => mp.PlayerEntityId == g.AssistPlayerEntityId)
+                    : null;
+
+                var preAssist = g.PreAssistPlayerEntityId.HasValue
+                    ? matchPlayers.FirstOrDefault(mp => mp.PlayerEntityId == g.PreAssistPlayerEntityId)
+                    : null;
+
+                return new MatchGoalItemDto
+                {
+                    MatchGoalLinkId = g.MatchGoalLinkId,
+                    MatchId = g.MatchId,
+                    ClubId = g.ClubId,
+
+                    ScorerPlayerEntityId = g.ScorerPlayerEntityId,
+                    ScorerName = scorer?.PlayerName,
+
+                    AssistPlayerEntityId = g.AssistPlayerEntityId,
+                    AssistName = assist?.PlayerName,
+
+                    PreAssistPlayerEntityId = g.PreAssistPlayerEntityId,
+                    PreAssistName = preAssist?.PlayerName
+                };
+            }).ToList()
+        };
+
+        return dto;
     }
 }

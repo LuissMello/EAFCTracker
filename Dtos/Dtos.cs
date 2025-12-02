@@ -496,3 +496,34 @@ public class RegisterGoalsRequest
 {
     public List<GoalRegistrationDto> Goals { get; set; } = new();
 }
+
+public class MatchStatisticsResponseDto
+{
+    public MatchStatisticsDto Overall { get; set; } = default!;
+    public List<PlayerStatisticsDto> Players { get; set; } = new();
+    public List<ClubStatisticsDto> Clubs { get; set; } = new();
+}
+
+
+public class MatchGoalsResponseDto
+{
+    public long MatchId { get; set; }
+    public int TotalGoals { get; set; }
+    public List<MatchGoalItemDto> Goals { get; set; } = new();
+}
+
+public class MatchGoalItemDto
+{
+    public long MatchGoalLinkId { get; set; }
+    public long MatchId { get; set; }
+    public long ClubId { get; set; }
+
+    public long ScorerPlayerEntityId { get; set; }
+    public string ScorerName { get; set; }
+
+    public long? AssistPlayerEntityId { get; set; }
+    public string AssistName { get; set; }
+
+    public long? PreAssistPlayerEntityId { get; set; }
+    public string PreAssistName { get; set; }
+}
