@@ -131,6 +131,7 @@ public class MatchPlayerEntity
     public string? ProOverallStr { get; set; }
     public int? ProHeight { get; set; }
     public string? ProName { get; set; }
+    public short PreAssists { get; set; }
 
     public long PlayerMatchStatsEntityId { get; set; }
 
@@ -347,4 +348,23 @@ public class SystemFetchAudit
 {
     public int Id { get; set; } = 1;                 // sempre 1 (registro singleton)
     public DateTimeOffset LastFetchedAt { get; set; } // UTC
+}
+
+public class MatchGoalLinkEntity
+{
+    public long Id { get; set; }
+
+    public long MatchId { get; set; }
+    public long ClubId { get; set; }
+
+    // FK para PlayerEntity
+    public long ScorerPlayerEntityId { get; set; }
+    public long? AssistPlayerEntityId { get; set; }
+    public long? PreAssistPlayerEntityId { get; set; }
+
+    // Navegação
+    public MatchEntity Match { get; set; } = default!;
+    public PlayerEntity Scorer { get; set; } = default!;
+    public PlayerEntity? Assist { get; set; }
+    public PlayerEntity? PreAssist { get; set; }
 }

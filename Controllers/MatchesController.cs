@@ -175,4 +175,98 @@
                 return StatusCode(500, "Internal server error.");
             }
         }
+
+    [HttpPost("{matchId}/goals")]
+    public async Task<IActionResult> RegisterGoals(long matchId, [FromBody] RegisterGoalsRequest request)
+    {
+        if (request.Goals == null || request.Goals.Count == 0)
+            return BadRequest("No goals provided.");
+
+        var match = await _db.Matches
+            .Include(m => m.MatchPlayers)
+            .FirstOrDefaultAsync(m => m.MatchId == matchId);
+
+        if (match == null)
+            return BadRequest("Match not found.");
+
+        var mp = match.MatchPlayers;
+
+        var realGoals = mp.ToDictionary(x => x.PlayerEntityId, x => x.Goals);
+        var realAssists = mp.ToDictionary(x => x.PlayerEntityId, x => x.Assists);
+
+        var reqGoals = new Dictionary<long, int>();
+        var reqAssists = new Dictionary<long, int>();
+        var reqPreAssists = new Dictionary<long, int>();
+
+        foreach (var g in request.Goals)
+        {
+            if (!reqGoals.ContainsKey(g.ScorerPlayerEntityId))
+                reqGoals[g.ScorerPlayerEntityId] = 0;
+
+            reqGoals[g.ScorerPlayerEntityId]++;
+
+            if (g.AssistPlayerEntityId.HasValue)
+            {
+                long id = g.AssistPlayerEntityId.Value;
+                if (!reqAssists.ContainsKey(id))
+                    reqAssists[id] = 0;
+
+                reqAssists[id]++;
+            }
+
+            if (g.PreAssistPlayerEntityId.HasValue)
+            {
+                long id = g.PreAssistPlayerEntityId.Value;
+                if (!reqPreAssists.ContainsKey(id))
+                    reqPreAssists[id] = 0;
+
+                reqPreAssists[id]++;
+            }
+        }
+
+        foreach (var kv in reqGoals)
+        {
+            if (!realGoals.ContainsKey(kv.Key))
+                return BadRequest($"Player {kv.Key} not found in match.");
+
+            if (kv.Value > realGoals[kv.Key])
+                return BadRequest($"Player {kv.Key} cannot receive {kv.Value} goals (max {realGoals[kv.Key]}).");
+        }
+
+        foreach (var kv in reqAssists)
+        {
+            if (!realAssists.ContainsKey(kv.Key))
+                return BadRequest($"Player {kv.Key} not found in match.");
+
+            if (kv.Value > realAssists[kv.Key])
+                return BadRequest($"Player {kv.Key} cannot receive {kv.Value} assists (max {realAssists[kv.Key]}).");
+        }
+
+        long clubId = mp.First().ClubId;
+
+        foreach (var g in request.Goals)
+        {
+            var entry = new MatchGoalLinkEntity
+            {
+                MatchId = matchId,
+                ClubId = clubId,
+                ScorerPlayerEntityId = g.ScorerPlayerEntityId,
+                AssistPlayerEntityId = g.AssistPlayerEntityId,
+                PreAssistPlayerEntityId = g.PreAssistPlayerEntityId
+            };
+
+            _db.MatchGoalLinks.Add(entry);
+
+            if (g.PreAssistPlayerEntityId.HasValue)
+            {
+                var mpItem = mp.FirstOrDefault(x => x.PlayerEntityId == g.PreAssistPlayerEntityId.Value);
+                if (mpItem != null)
+                    mpItem.PreAssists++;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = "Goals registered successfully." });
     }
+}

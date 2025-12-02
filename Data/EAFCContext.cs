@@ -12,6 +12,7 @@ public class EAFCContext : DbContext
     public DbSet<OverallStatsEntity> OverallStats { get; set; }
     public DbSet<PlayoffAchievementEntity> PlayoffAchievements { get; set; }
     public DbSet<SystemFetchAudit> SystemFetchAudits { get; set; }
+    public DbSet<MatchGoalLinkEntity> MatchGoalLinks { get; set; }
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -127,6 +128,49 @@ public class EAFCContext : DbContext
         modelBuilder.Entity<SystemFetchAudit>()
         .HasData(new SystemFetchAudit { Id = 1, LastFetchedAt = DateTimeOffset.MinValue
          });
+
+        // ===============================
+        // MatchGoalLinkEntity
+        // ===============================
+        modelBuilder.Entity<MatchGoalLinkEntity>()
+            .HasKey(g => g.Id);
+
+        modelBuilder.Entity<MatchGoalLinkEntity>()
+            .Property(g => g.Id)
+            .ValueGeneratedOnAdd();
+
+        // FK → Match
+        modelBuilder.Entity<MatchGoalLinkEntity>()
+            .HasOne(g => g.Match)
+            .WithMany()
+            .HasForeignKey(g => g.MatchId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // FK → Scorer (obrigatório)
+        modelBuilder.Entity<MatchGoalLinkEntity>()
+            .HasOne(g => g.Scorer)
+            .WithMany()
+            .HasForeignKey(g => g.ScorerPlayerEntityId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // FK → Assist (opcional)
+        modelBuilder.Entity<MatchGoalLinkEntity>()
+            .HasOne(g => g.Assist)
+            .WithMany()
+            .HasForeignKey(g => g.AssistPlayerEntityId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // FK → Pre-Assist (opcional)
+        modelBuilder.Entity<MatchGoalLinkEntity>()
+            .HasOne(g => g.PreAssist)
+            .WithMany()
+            .HasForeignKey(g => g.PreAssistPlayerEntityId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Índice para buscas rápidas por partida
+        modelBuilder.Entity<MatchGoalLinkEntity>()
+            .HasIndex(g => new { g.MatchId, g.ClubId });
+
 
     }
 }

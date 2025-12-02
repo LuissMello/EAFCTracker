@@ -484,3 +484,15 @@ public sealed class PlayerAttributeSnapshotDto
     public string Pos { get; set; }
     public PlayerMatchStatsDto? Statistics { get; set; }
 }
+
+public class GoalRegistrationDto
+{
+    public long ScorerPlayerEntityId { get; set; }
+    public long? AssistPlayerEntityId { get; set; }
+    public long? PreAssistPlayerEntityId { get; set; }
+}
+
+public class RegisterGoalsRequest
+{
+    public List<GoalRegistrationDto> Goals { get; set; } = new();
+}
