@@ -293,6 +293,7 @@ public class CalendarController : ControllerBase
         {
             int goals = players.Sum(p => p.Goals);
             int assists = players.Sum(p => p.Assists);
+            int preAssists = players.Sum(p => p.PreAssists);
             int shots = players.Sum(p => p.Shots);
             int passesMade = players.Sum(p => p.Passesmade);
             int passAttempts = players.Sum(p => p.Passattempts);
@@ -307,6 +308,7 @@ public class CalendarController : ControllerBase
             {
                 TotalGoals = goals,
                 TotalAssists = assists,
+                TotalPreAssists = preAssists,
                 TotalShots = shots,
                 TotalPassesMade = passesMade,
                 TotalPassAttempts = passAttempts,

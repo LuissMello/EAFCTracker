@@ -23,6 +23,7 @@ namespace EAFCMatchTracker.Dtos
             int totalPlayers = data.Count;
             int goals = data.Sum(p => p.Goals);
             int assists = data.Sum(p => p.Assists);
+            int preAssists = data.Sum(p => p.PreAssists);
             int shots = data.Sum(p => p.Shots);
             int passesMade = data.Sum(p => p.Passesmade);
             int passAttempts = data.Sum(p => p.Passattempts);
@@ -44,6 +45,7 @@ namespace EAFCMatchTracker.Dtos
 
                 TotalGoals = goals,
                 TotalAssists = assists,
+                TotalPreAssists = preAssists,
                 TotalShots = shots,
                 TotalPassesMade = passesMade,
                 TotalPassAttempts = passAttempts,
@@ -61,6 +63,7 @@ namespace EAFCMatchTracker.Dtos
 
                 AvgGoals = totalPlayers > 0 ? goals / (double)totalPlayers : 0,
                 AvgAssists = totalPlayers > 0 ? assists / (double)totalPlayers : 0,
+                AvgPreAssists = totalPlayers > 0 ? preAssists / (double)totalPlayers : 0,
                 AvgShots = totalPlayers > 0 ? shots / (double)totalPlayers : 0,
                 AvgPassesMade = totalPlayers > 0 ? passesMade / (double)totalPlayers : 0,
                 AvgPassAttempts = totalPlayers > 0 ? passAttempts / (double)totalPlayers : 0,
@@ -107,6 +110,8 @@ namespace EAFCMatchTracker.Dtos
                     int wins = g.Sum(p => p.Wins);
                     int losses = g.Sum(p => p.Losses);
                     int draws = matches - wins - losses;
+                    int preAssists = g.Sum(p => p.PreAssists);
+                    int assists = g.Sum(p => p.Assists);
 
                     return new PlayerStatisticsDto
                     {
@@ -119,7 +124,8 @@ namespace EAFCMatchTracker.Dtos
 
                         MatchesPlayed = matches,
                         TotalGoals = goals,
-                        TotalAssists = g.Sum(p => p.Assists),
+                        TotalAssists = assists,
+                        TotalPreAssists = preAssists,
                         TotalShots = shots,
                         TotalPassesMade = passesMade,
                         TotalPassAttempts = passAttempts,
@@ -318,6 +324,7 @@ namespace EAFCMatchTracker.Dtos
 
                 TotalGoals = playersStats.Sum(p => p.TotalGoals),
                 TotalAssists = playersStats.Sum(p => p.TotalAssists),
+                TotalPreAssists = playersStats.Sum(p => p.TotalPreAssists),
                 TotalShots = totalShots,
                 TotalPassesMade = playersStats.Sum(p => p.TotalPassesMade),
                 TotalPassAttempts = totalPassAttempts,
@@ -440,6 +447,8 @@ namespace EAFCMatchTracker.Dtos
                     int wins = g.Sum(p => p.Wins);
                     int losses = g.Sum(p => p.Losses);
                     int draws = Math.Max(0, matches - wins - losses);
+                    int assists = g.Sum(p => p.Assists);
+                    int preAssists = g.Sum(p => p.PreAssists);
 
                     return new PlayerStatisticsDto
                     {
@@ -457,7 +466,8 @@ namespace EAFCMatchTracker.Dtos
 
                         MatchesPlayed = matches,
                         TotalGoals = goals,
-                        TotalAssists = g.Sum(p => p.Assists),
+                        TotalAssists = assists,
+                        TotalPreAssists  = preAssists,
                         TotalShots = shots,
                         TotalPassesMade = passesMade,
                         TotalPassAttempts = passAttempts,

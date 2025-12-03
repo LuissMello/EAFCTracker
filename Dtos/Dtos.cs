@@ -39,6 +39,7 @@ public class MatchPlayerDto
 
     public short Goals { get; set; }
     public short Assists { get; set; }
+    public short PreAssists { get; set; }
     public short Cleansheetsany { get; set; }
     public short Cleansheetsdef { get; set; }
     public short Cleansheetsgk { get; set; }
@@ -105,6 +106,7 @@ public class MatchPlayerStatsDto
     public long PlayerId { get; set; }
     public string PlayerName { get; set; }
     public short Assists { get; set; }
+    public short PreAssists { get; set; }
     public short CleansheetsAny { get; set; }
     public short CleansheetsDef { get; set; }
     public short CleansheetsGk { get; set; }
@@ -144,6 +146,7 @@ public class PlayerStatisticsDto
     public int TotalGoals { get; set; }
     public int TotalGoalsConceded { get; set; }
     public int TotalAssists { get; set; }
+    public int TotalPreAssists { get; set; }
     public int TotalShots { get; set; }
     public int TotalPassesMade { get; set; }
     public int TotalPassAttempts { get; set; }
@@ -216,6 +219,7 @@ public class MatchStatisticsDto
 
     public int TotalGoals { get; set; }
     public int TotalAssists { get; set; }
+    public int TotalPreAssists { get; set; }
     public int TotalShots { get; set; }
     public int TotalPassesMade { get; set; }
     public int TotalPassAttempts { get; set; }
@@ -232,6 +236,7 @@ public class MatchStatisticsDto
 
     public double AvgGoals { get; set; }
     public double AvgAssists { get; set; }
+    public double AvgPreAssists { get; set; }
     public double AvgShots { get; set; }
     public double AvgPassesMade { get; set; }
     public double AvgPassAttempts { get; set; }
@@ -353,6 +358,7 @@ public class CalendarMatchStatLineDto
 {
     public int TotalGoals { get; set; }
     public int TotalAssists { get; set; }
+    public int TotalPreAssists { get; set; }
     public int TotalShots { get; set; }
     public int TotalPassesMade { get; set; }
     public int TotalPassAttempts { get; set; }
@@ -514,7 +520,6 @@ public class MatchGoalsResponseDto
 
 public class MatchGoalItemDto
 {
-    public long MatchGoalLinkId { get; set; }
     public long MatchId { get; set; }
     public long ClubId { get; set; }
 

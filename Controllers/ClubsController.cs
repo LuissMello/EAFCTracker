@@ -282,6 +282,7 @@ public class ClubsController : ControllerBase
             var totalRows = allPlayers.Count;
             var totalGoals = playersStats.Sum(p => p.TotalGoals);
             var totalAssists = playersStats.Sum(p => p.TotalAssists);
+            var totalPreAssists = playersStats.Sum(p => p.TotalPreAssists);
             var totalShots = playersStats.Sum(p => p.TotalShots);
             var totalPassesMade = playersStats.Sum(p => p.TotalPassesMade);
             var totalPassAttempts = playersStats.Sum(p => p.TotalPassAttempts);
@@ -303,6 +304,7 @@ public class ClubsController : ControllerBase
                 TotalPlayers = distinctPlayers,
                 TotalGoals = totalGoals,
                 TotalAssists = totalAssists,
+                TotalPreAssists = totalPreAssists,
                 TotalShots = totalShots,
                 TotalPassesMade = totalPassesMade,
                 TotalPassAttempts = totalPassAttempts,
@@ -318,6 +320,7 @@ public class ClubsController : ControllerBase
                 TotalMom = totalMom,
                 AvgGoals = totalRows > 0 ? totalGoals / (double)totalRows : 0,
                 AvgAssists = totalRows > 0 ? totalAssists / (double)totalRows : 0,
+                AvgPreAssists = totalRows > 0 ? totalPreAssists / (double)totalRows : 0,
                 AvgShots = totalRows > 0 ? totalShots / (double)totalRows : 0,
                 AvgPassesMade = totalRows > 0 ? totalPassesMade / (double)totalRows : 0,
                 AvgPassAttempts = totalRows > 0 ? totalPassAttempts / (double)totalRows : 0,
@@ -446,7 +449,6 @@ public class ClubsController : ControllerBase
     {
         var dayMatches = g.ToList();
 
-        // players somente dos clubes selecionados
         var dayPlayers = dayMatches
             .SelectMany(m => m.MatchPlayers)
             .Where(mp => ids.Contains(mp.ClubId))
@@ -455,14 +457,13 @@ public class ClubsController : ControllerBase
         var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(dayPlayers);
         var clubStats = StatsAggregator.BuildSingleClubFromPlayers(dayPlayers, "Clubes agrupados");
 
-        // ✅ calcula GF/GA e W/D/L com base nas PARTIDAS (não nos jogadores)
         var (gf, ga) = ComputeGoalsForAgainst(dayMatches, ids);
         var (wins, draws, losses, countedMatches) = ComputeWinsDrawsLosses(dayMatches, ids);
 
-        // totais "por jogador" continuam para as demais métricas (gols, passes, etc.)
         var totalRows = dayPlayers.Count;
         var totalGoals = playerStats.Sum(p => p.TotalGoals);
         var totalAssists = playerStats.Sum(p => p.TotalAssists);
+        var totalPreAssists = playerStats.Sum(p => p.TotalPreAssists);
         var totalShots = playerStats.Sum(p => p.TotalShots);
         var totalPassesMade = playerStats.Sum(p => p.TotalPassesMade);
         var totalPassAttempts = playerStats.Sum(p => p.TotalPassAttempts);
@@ -475,7 +476,6 @@ public class ClubsController : ControllerBase
         var totalMom = playerStats.Sum(p => p.TotalMom);
         var distinctPlayers = playerStats.Count;
 
-        // ✅ usa wins/draws/losses calculados por PARTIDA
         var overall = new MatchStatisticsDto
         {
             TotalMatches = countedMatches,   // ou dayMatches.Count, se preferir contar também jogos "grupo x grupo"
@@ -483,6 +483,7 @@ public class ClubsController : ControllerBase
 
             TotalGoals = totalGoals,
             TotalAssists = totalAssists,
+            TotalPreAssists = totalPreAssists,
             TotalShots = totalShots,
             TotalPassesMade = totalPassesMade,
             TotalPassAttempts = totalPassAttempts,
@@ -502,6 +503,7 @@ public class ClubsController : ControllerBase
 
             AvgGoals = totalRows > 0 ? totalGoals / (double)totalRows : 0,
             AvgAssists = totalRows > 0 ? totalAssists / (double)totalRows : 0,
+            AvgPreAssists = totalRows > 0 ? totalPreAssists / (double)totalRows : 0,
             AvgShots = totalRows > 0 ? totalShots / (double)totalRows : 0,
             AvgPassesMade = totalRows > 0 ? totalPassesMade / (double)totalRows : 0,
             AvgPassAttempts = totalRows > 0 ? totalPassAttempts / (double)totalRows : 0,
