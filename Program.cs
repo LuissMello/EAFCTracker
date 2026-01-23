@@ -18,17 +18,6 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls("http://0.0.0.0:8080");
 
-// -------- OpenTelemetry / Azure Monitor --------
-// Define o nome do serviço como aparecerá no Application Insights (Application Map, etc.)
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(r => r.AddService(
-        serviceName: "EAFCTracker-API",
-        serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0"))
-    .UseAzureMonitor(); // habilita traces, requests, dependencies, logs e métricas
-
-// OBS: Para forçar aparecer tudo em testes, você pode definir no App Service:
-// OTEL_TRACES_SAMPLER = always_on
-
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
