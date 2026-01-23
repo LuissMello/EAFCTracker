@@ -16,6 +16,8 @@ using OpenTelemetry.Resources;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.WebHost.UseUrls("http://0.0.0.0:8080");
+
 // -------- OpenTelemetry / Azure Monitor --------
 // Define o nome do serviço como aparecerá no Application Insights (Application Map, etc.)
 builder.Services.AddOpenTelemetry()
