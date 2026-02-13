@@ -727,8 +727,8 @@ public class MaintenanceController : ControllerBase
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"];
-        var searchTpl = _config["EAFCSettings:SearchClubsEndpoint"]
-                        ?? "/allTimeLeaderboard/search?platform=common-gen5&clubName={0}";
+        var searchTpl = _config["EAFCSettings:SearchCurrentSeasonLeaderboardEndpoint"]
+                        ?? "/currentSeasonLeaderboard/search?platform=common-gen5&clubName={0}";
 
         EnsureBaseUrl(baseUrl);
         var uri = BuildUri(baseUrl!, string.Format(searchTpl, Uri.EscapeDataString(clubName)));

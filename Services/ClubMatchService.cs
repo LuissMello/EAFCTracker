@@ -119,7 +119,7 @@ public class ClubMatchService : IClubMatchService
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
-        var searchTpl = _config["EAFCSettings:SearchClubsEndpoint"] ?? "/allTimeLeaderboard/search?platform=common-gen5&clubName={0}";
+        var searchTpl = _config["EAFCSettings:SearchCurrentSeasonLeaderboardEndpoint"] ?? "/currentSeasonLeaderboard/search?platform=common-gen5&clubName={0}";
 
         var uri = BuildUri(baseUrl, string.Format(searchTpl, Uri.EscapeDataString(clubName)));
         _logger.LogInformation("Built URI: {Uri}", uri);
