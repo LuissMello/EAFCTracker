@@ -145,7 +145,10 @@ namespace EAFCMatchTracker.Application.Dtos
                         WinPercent = matches > 0 ? wins * 100.0 / matches : 0,
 
                         // Para "uma partida", isso reflete exatamente o estado; para agregados, indica se em ALGUMA partida ele desconectou.
-                        Disconnected = g.Any(p => p.Disconnected)
+                        Disconnected = g.Any(p => p.Disconnected),
+
+                        TotalSecondsPlayed = g.Sum(p => (int)p.SecondsPlayed),
+                        TotalGameTime      = g.Sum(p => (int)p.GameTime),
                     };
                 })
                 .OrderByDescending(p => p.MatchesPlayed)
@@ -484,7 +487,10 @@ namespace EAFCMatchTracker.Application.Dtos
                         PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
                         TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
                         GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0,
-                        WinPercent = matches > 0 ? (wins * 100.0) / matches : 0
+                        WinPercent = matches > 0 ? (wins * 100.0) / matches : 0,
+
+                        TotalSecondsPlayed = g.Sum(p => (int)p.SecondsPlayed),
+                        TotalGameTime      = g.Sum(p => (int)p.GameTime),
                     };
                 })
                 // opcional: ordenar por partidas (ou por gols, etc.)

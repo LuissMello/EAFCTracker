@@ -35,4 +35,6 @@ public class PlayerStatisticsDto
     public int? ProHeight { get; set; }
     public string? ProName { get; set; }
     public bool Disconnected { get; set; }
+    public int TotalSecondsPlayed { get; set; }
+    public int TotalGameTime { get; set; }
 }
