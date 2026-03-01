@@ -398,6 +398,13 @@ public class ClubMatchService : IClubMatchService
             var statsToInsert = new List<PlayerMatchStatsEntity>();
             var matchPlayerRows = new List<MatchPlayerEntity>();
 
+            // Busca as últimas stats de TODOS os jogadores de uma vez (2 queries no total, não N)
+            var latestStatsByPlayer = await BatchFetchLatestStatsAsync(
+                existingPlayers.Values.Select(p => p.Id).ToList(), ct);
+
+            // Índice por EntityId para evitar re-queries no loop de update abaixo
+            var playersByEntityId = existingPlayers.Values.ToDictionary(p => p.Id);
+
             if (match.Players != null)
             {
                 foreach (var clubEntry in match.Players)
@@ -415,10 +422,8 @@ public class ClubMatchService : IClubMatchService
                         var data = playerEntry.Value;
                         var p = existingPlayers[(pid, cid)];
 
-                        var lastStats = await _db.PlayerMatchStats
-                            .Where(s => s.PlayerEntityId == p.Id)
-                            .OrderByDescending(s => s.Id)
-                            .FirstOrDefaultAsync(ct);
+                        // Resultado da batch query — sem round-trip ao banco por jogador
+                        var lastStats = latestStatsByPlayer.TryGetValue(p.Id, out var cached) ? cached : null;
 
                         long statsId;
                         var parsed = PlayerMatchStatsEntity.Parse(data.Vproattr);
@@ -514,11 +519,12 @@ public class ClubMatchService : IClubMatchService
 
                 foreach (var kv in latestByPlayer)
                 {
-                    var playerId = kv.Key;
-                    var stats = kv.Value;
-                    var player = await _db.Players.FirstAsync(p => p.Id == playerId, ct);
-                    player.PlayerMatchStatsId = stats.Id;
-                    _db.Players.Update(player);
+                    // Usa o dicionário já carregado — sem query adicional por jogador
+                    if (playersByEntityId.TryGetValue(kv.Key, out var player))
+                    {
+                        player.PlayerMatchStatsId = kv.Value.Id;
+                        _db.Players.Update(player);
+                    }
                 }
 
                 await _db.SaveChangesAsync(ct);
@@ -579,6 +585,32 @@ public class ClubMatchService : IClubMatchService
     {
         if (string.IsNullOrWhiteSpace(seasonId)) return int.MinValue;
         return int.TryParse(seasonId, out var n) ? n : int.MinValue;
+    }
+
+    /// <summary>
+    /// Busca as últimas PlayerMatchStatsEntity de cada jogador em apenas 2 queries,
+    /// independente de quantos jogadores existam (elimina o padrão N+1).
+    /// </summary>
+    private async Task<Dictionary<long, PlayerMatchStatsEntity>> BatchFetchLatestStatsAsync(
+        List<long> playerEntityIds, CancellationToken ct)
+    {
+        if (playerEntityIds.Count == 0)
+            return new Dictionary<long, PlayerMatchStatsEntity>();
+
+        // Query 1: pega o maior ID de stats por jogador
+        var maxIds = await _db.PlayerMatchStats
+            .Where(s => playerEntityIds.Contains(s.PlayerEntityId))
+            .GroupBy(s => s.PlayerEntityId)
+            .Select(g => g.Max(s => s.Id))
+            .ToListAsync(ct);
+
+        if (maxIds.Count == 0)
+            return new Dictionary<long, PlayerMatchStatsEntity>();
+
+        // Query 2: carrega as entidades completas pelos IDs
+        return await _db.PlayerMatchStats
+            .Where(s => maxIds.Contains(s.Id))
+            .ToDictionaryAsync(s => s.PlayerEntityId, ct);
     }
 
     private async Task UpsertPlayoffAchievementsAsync(long clubId, IEnumerable<Domain.Models.PlayoffAchievement> items, CancellationToken ct)
