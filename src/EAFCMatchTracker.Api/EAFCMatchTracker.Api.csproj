@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>bea48b92-9874-46d7-9b38-7cdea65dc00a</UserSecretsId>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+    <DockerfileContext>..\..\</DockerfileContext>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="7.0.0" />
+    <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EAFCMatchTracker.Domain\EAFCMatchTracker.Domain.csproj" />
+    <ProjectReference Include="..\EAFCMatchTracker.Application\EAFCMatchTracker.Application.csproj" />
+    <ProjectReference Include="..\EAFCMatchTracker.Infrastructure\EAFCMatchTracker.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
