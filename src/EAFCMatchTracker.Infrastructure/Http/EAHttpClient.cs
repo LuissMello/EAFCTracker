@@ -38,14 +38,28 @@ namespace EAFCMatchTracker.Infrastructure.Http
                 Content = content
             };
 
-            // Headers "de navegador"
-            req.Headers.UserAgent.ParseAdd("PostmanRuntime/7.46.1");
-            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            req.Headers.AcceptEncoding.ParseAdd("gzip");
-            req.Headers.AcceptEncoding.ParseAdd("deflate");
-            req.Headers.AcceptEncoding.ParseAdd("br");
-            req.Headers.Connection.Clear();
-            req.Headers.Connection.Add("keep-alive");
+            // User-Agent de Chrome real (atualizar periodicamente com versão atual)
+            req.Headers.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/131.0.0.0 Safari/537.36");
+
+            req.Headers.Accept.ParseAdd("application/json, text/plain, */*");
+            req.Headers.AcceptEncoding.ParseAdd("gzip, deflate, br, zstd");
+            req.Headers.AcceptLanguage.ParseAdd("pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7");
+
+            // Chrome client hints — ausência desses headers é sinal de bot
+            req.Headers.TryAddWithoutValidation("sec-ch-ua",
+                "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"");
+            req.Headers.TryAddWithoutValidation("sec-ch-ua-mobile", "?0");
+            req.Headers.TryAddWithoutValidation("sec-ch-ua-platform", "\"Windows\"");
+
+            // Sec-Fetch headers — browser sempre envia, bots geralmente não
+            req.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+            req.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            req.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-site");
+
+            req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
 
             // Host correto (com porta se aplicável)
             var hostHeader = endpoint.IsDefaultPort ? endpoint.IdnHost : $"{endpoint.IdnHost}:{endpoint.Port}";
