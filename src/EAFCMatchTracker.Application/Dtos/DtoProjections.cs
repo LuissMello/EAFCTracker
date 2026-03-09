@@ -106,43 +106,7 @@ public static class DtoProjections
             Wins = p.Wins,
             Pos = p.Pos,
             Namespace = p.Namespace,
-            Stats = p.Player.PlayerMatchStats == null ? null : new PlayerMatchStatsDto
-            {
-                Aceleracao = p.Player.PlayerMatchStats.Aceleracao,
-                Pique = p.Player.PlayerMatchStats.Pique,
-                Finalizacao = p.Player.PlayerMatchStats.Finalizacao,
-                Falta = p.Player.PlayerMatchStats.Falta,
-                Cabeceio = p.Player.PlayerMatchStats.Cabeceio,
-                ForcaDoChute = p.Player.PlayerMatchStats.ForcaDoChute,
-                ChuteLonge = p.Player.PlayerMatchStats.ChuteLonge,
-                Voleio = p.Player.PlayerMatchStats.Voleio,
-                Penalti = p.Player.PlayerMatchStats.Penalti,
-                Visao = p.Player.PlayerMatchStats.Visao,
-                Cruzamento = p.Player.PlayerMatchStats.Cruzamento,
-                Lancamento = p.Player.PlayerMatchStats.Lancamento,
-                PasseCurto = p.Player.PlayerMatchStats.PasseCurto,
-                Curva = p.Player.PlayerMatchStats.Curva,
-                Agilidade = p.Player.PlayerMatchStats.Agilidade,
-                Equilibrio = p.Player.PlayerMatchStats.Equilibrio,
-                PosAtaqueInutil = p.Player.PlayerMatchStats.PosAtaqueInutil,
-                ControleBola = p.Player.PlayerMatchStats.ControleBola,
-                Conducao = p.Player.PlayerMatchStats.Conducao,
-                Interceptacaos = p.Player.PlayerMatchStats.Interceptacaos,
-                NocaoDefensiva = p.Player.PlayerMatchStats.NocaoDefensiva,
-                DivididaEmPe = p.Player.PlayerMatchStats.DivididaEmPe,
-                Carrinho = p.Player.PlayerMatchStats.Carrinho,
-                Impulsao = p.Player.PlayerMatchStats.Impulsao,
-                Folego = p.Player.PlayerMatchStats.Folego,
-                Forca = p.Player.PlayerMatchStats.Forca,
-                Reacao = p.Player.PlayerMatchStats.Reacao,
-                Combatividade = p.Player.PlayerMatchStats.Combatividade,
-                Frieza = p.Player.PlayerMatchStats.Frieza,
-                ElasticidadeGL = p.Player.PlayerMatchStats.ElasticidadeGL,
-                ManejoGL = p.Player.PlayerMatchStats.ManejoGL,
-                ChuteGL = p.Player.PlayerMatchStats.ChuteGL,
-                ReflexosGL = p.Player.PlayerMatchStats.ReflexosGL,
-                PosGL = p.Player.PlayerMatchStats.PosGL
-            }
+            Stats = null   // use /api/Matches/{id}/players/{pid}/statistics for player attributes
         };
 
     public static readonly Expression<Func<MatchClubEntity, MatchClubDto>> MatchClub =

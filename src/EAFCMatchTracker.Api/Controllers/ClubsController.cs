@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using EAFCMatchTracker.Application.Dtos;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace EAFCMatchTracker.Api.Controllers;
@@ -30,29 +31,29 @@ public class ClubsController : ControllerBase
             var ids = ParseClubIdsFromConfig(_config);
             if (ids.Count == 0) return Ok(Array.Empty<ClubListItemDto>());
 
-            var flat = await _db.MatchClubs
+            var raw = await _db.MatchClubs
                 .AsNoTracking()
                 .Where(mc => ids.Contains(mc.ClubId))
-                .Select(mc => new
+                .GroupBy(mc => mc.ClubId)
+                .Select(g => new
                 {
-                    mc.ClubId,
-                    mc.Details.Name,
-                    Crest = mc.Team.ToString(),
-                    Ts = mc.Match.Timestamp
-                })
-                .OrderByDescending(x => x.Ts)
-                .ToListAsync();
-
-            var clubs = flat
-                .GroupBy(x => x.ClubId)
-                .Select(g =>
-                {
-                    var name = g.Select(x => x.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? $"Clube {g.Key}";
-                    var crest = g.Select(x => x.Crest).FirstOrDefault(c => !string.IsNullOrWhiteSpace(c));
-                    return new ClubListItemDto { ClubId = g.Key, Name = name, CrestAssetId = crest };
+                    ClubId = g.Key,
+                    Name = g.OrderByDescending(x => x.Match.Timestamp)
+                             .Select(x => x.Details.Name)
+                             .FirstOrDefault(),
+                    Team = g.OrderByDescending(x => x.Match.Timestamp)
+                             .Select(x => x.Team)
+                             .FirstOrDefault()
                 })
                 .OrderBy(x => x.Name)
-                .ToList();
+                .ToListAsync();
+
+            var clubs = raw.Select(c => new ClubListItemDto
+            {
+                ClubId = c.ClubId,
+                Name = c.Name ?? $"Clube {c.ClubId}",
+                CrestAssetId = c.Team.ToString()
+            }).ToList();
 
             return Ok(clubs);
         }
@@ -702,16 +703,138 @@ public class ClubsController : ControllerBase
     }
 
 
-    public sealed class PagedResult<T>
+    [HttpGet("matches/results")]
+    public async Task<ActionResult<PagedResult<MatchResultDto>>> GetMultiClubMatchResults(
+        [FromQuery] long[] clubIds,
+        [FromQuery] MatchType matchType = MatchType.All,
+        [FromQuery] int? opponentCount = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken ct = default)
     {
-        public int Page { get; init; }
-        public int PageSize { get; init; }
-        public int TotalCount { get; init; }
-        public int TotalPages { get; init; }
-        public bool HasPrevious { get; init; }
-        public bool HasNext { get; init; }
-        public IReadOnlyList<T> Items { get; init; } = Array.Empty<T>();
+        _logger.LogInformation("GetMultiClubMatchResults called. ClubIds={ClubIds}, matchType={MatchType}, page={Page}, pageSize={PageSize}",
+            string.Join(",", clubIds), matchType, page, pageSize);
+        try
+        {
+            if (clubIds == null || clubIds.Length == 0)
+                return BadRequest("Informe ao menos um clubId.");
+            var ids = clubIds.Distinct().ToList();
+
+            if (page < 1) page = 1;
+            const int MaxPageSize = 200;
+            if (pageSize < 1) pageSize = 50;
+            if (pageSize > MaxPageSize) pageSize = MaxPageSize;
+
+            opponentCount = ReadOppAliasOrNull(Request, opponentCount);
+            if (opponentCount.HasValue)
+            {
+                opponentCount = ClampOpp(opponentCount.Value);
+                if (opponentCount < MinOpponentPlayers || opponentCount > MaxOpponentPlayers)
+                    return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
+            }
+
+            IQueryable<MatchEntity> q = _db.Matches.AsNoTracking()
+                .Where(m => m.Clubs.Any(c => ids.Contains(c.ClubId)));
+
+            if (matchType == MatchType.League)
+                q = q.Where(m => m.MatchType == MatchType.League);
+            else if (matchType == MatchType.Playoff)
+                q = q.Where(m => m.MatchType == MatchType.Playoff);
+
+            if (opponentCount.HasValue)
+            {
+                var oc = opponentCount.Value;
+                q = q.Where(m =>
+                    m.MatchPlayers
+                     .Where(mp => !ids.Contains(mp.ClubId))
+                     .Select(mp => mp.PlayerEntityId)
+                     .Distinct()
+                     .Count() == oc);
+            }
+
+            var totalCount = await q.CountAsync(ct);
+            var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+            var skip = (page - 1) * pageSize;
+
+            var matches = await q
+                .OrderByDescending(m => m.Timestamp)
+                .ThenByDescending(m => m.MatchId)
+                .Skip(skip)
+                .Take(pageSize)
+                .Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            var allClubIds = matches
+                .SelectMany(m => m.Clubs.Select(c => c.ClubId))
+                .Distinct().ToList();
+
+            var divByClub = await _db.OverallStats
+                .AsNoTracking()
+                .Where(os => allClubIds.Contains(os.ClubId))
+                .Select(os => new { os.ClubId, os.CurrentDivision })
+                .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct);
+
+            var items = new List<MatchResultDto>(matches.Count);
+            foreach (var match in matches)
+            {
+                var clubs = match.Clubs.OrderBy(c => c.Team).ToList();
+                if (clubs.Count != 2) continue;
+                var a = clubs[0];
+                var b = clubs[1];
+
+                var redA = (short)match.MatchPlayers.Where(p => p.ClubId == a.ClubId).Sum(p => p.Redcards);
+                var redB = (short)match.MatchPlayers.Where(p => p.ClubId == b.ClubId).Sum(p => p.Redcards);
+                var cntA = match.MatchPlayers.Where(mp => mp.ClubId == a.ClubId).Select(mp => mp.PlayerEntityId).Distinct().Count();
+                var cntB = match.MatchPlayers.Where(mp => mp.ClubId == b.ClubId).Select(mp => mp.PlayerEntityId).Distinct().Count();
+                var motmId = GetManOfTheMatchId(match);
+
+                var dto = new MatchResultDto
+                {
+                    MatchId = match.MatchId,
+                    Timestamp = match.Timestamp,
+                    ClubAName = a.Details?.Name ?? $"Clube {a.ClubId}",
+                    ClubAGoals = a.Goals,
+                    ClubARedCards = redA,
+                    ClubAPlayerCount = cntA,
+                    ClubADetails = a.Details == null ? null : ToDetailsDto(a.Details, a.ClubId),
+                    ClubASummary = BuildClubSummaryNames(match, a.ClubId, redA, motmId),
+                    ClubBName = b.Details?.Name ?? $"Clube {b.ClubId}",
+                    ClubBGoals = b.Goals,
+                    ClubBRedCards = redB,
+                    ClubBPlayerCount = cntB,
+                    ClubBDetails = b.Details == null ? null : ToDetailsDto(b.Details, b.ClubId),
+                    ClubBSummary = BuildClubSummaryNames(match, b.ClubId, redB, motmId),
+                    ResultText = $"{a.Details?.Name ?? "Clube A"} {a.Goals} x {b.Goals} {b.Details?.Name ?? "Clube B"}"
+                };
+                if (dto.ClubADetails != null) dto.ClubADetails.Team = a.Team.ToString();
+                if (dto.ClubBDetails != null) dto.ClubBDetails.Team = b.Team.ToString();
+                if (dto.ClubADetails != null && divByClub.TryGetValue(a.ClubId, out var divA))
+                    dto.ClubADetails.CurrentDivision = divA;
+                if (dto.ClubBDetails != null && divByClub.TryGetValue(b.ClubId, out var divB))
+                    dto.ClubBDetails.CurrentDivision = divB;
+                items.Add(dto);
+            }
+
+            return Ok(new PagedResult<MatchResultDto>
+            {
+                Page = page,
+                PageSize = pageSize,
+                TotalCount = totalCount,
+                TotalPages = totalPages,
+                HasPrevious = page > 1 && totalPages > 0,
+                HasNext = page < totalPages,
+                Items = items
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetMultiClubMatchResults");
+            return StatusCode(500, "Erro interno ao buscar resultados das partidas.");
+        }
     }
+
 
     [HttpGet("{clubId:long}/matches/results")]
     public async Task<ActionResult<PagedResult<MatchResultDto>>> GetMatchResults(

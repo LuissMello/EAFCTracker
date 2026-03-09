@@ -1,3 +1,4 @@
+using EAFCMatchTracker.Application.Dtos;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -17,17 +18,38 @@ public class MatchesController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<List<MatchDto>>> GetAllMatches(CancellationToken ct)
+    public async Task<ActionResult<PagedResult<MatchDto>>> GetAllMatches(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken ct = default)
     {
         try
         {
-            _logger.LogInformation("Getting all matches.");
-            var matches = await _db.Matches
-                .AsNoTracking()
-                .OrderByDescending(m => m.Timestamp)
+            _logger.LogInformation("Getting all matches. Page={Page}, PageSize={PageSize}", page, pageSize);
+
+            if (page < 1) page = 1;
+            const int MaxPageSize = 200;
+            if (pageSize < 1) pageSize = 50;
+            if (pageSize > MaxPageSize) pageSize = MaxPageSize;
+
+            var q = _db.Matches.AsNoTracking().OrderByDescending(m => m.Timestamp);
+            var total = await q.CountAsync(ct);
+            var items = await q
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToMatchDtoListAsync(ct);
-            _logger.LogInformation("Successfully retrieved all matches.");
-            return Ok(matches);
+
+            _logger.LogInformation("Successfully retrieved matches. Total={Total}", total);
+            return Ok(new PagedResult<MatchDto>
+            {
+                Page = page,
+                PageSize = pageSize,
+                TotalCount = total,
+                TotalPages = (int)Math.Ceiling(total / (double)pageSize),
+                HasPrevious = page > 1,
+                HasNext = page * pageSize < total,
+                Items = items
+            });
         }
         catch (Exception ex)
         {
