@@ -988,6 +988,344 @@ public class ClubsController : ControllerBase
     }
 
 
+    [HttpGet("records")]
+    public async Task<ActionResult<ClubRecordsDto>> GetClubRecords(
+        [FromQuery] string clubIds,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation("GetClubRecords called for clubIds={ClubIds}", clubIds);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(clubIds))
+                return BadRequest("Informe 'clubIds'.");
+
+            var ids = clubIds
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => long.TryParse(s, out var v) ? (long?)v : null)
+                .Where(v => v.HasValue && v.Value > 0)
+                .Select(v => v!.Value)
+                .Distinct()
+                .ToList();
+
+            if (ids.Count == 0)
+                return BadRequest("Nenhum clubId válido em 'clubIds'.");
+
+            var matches = await _db.Matches
+                .AsNoTracking()
+                .Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .Where(m => m.Clubs.Any(c => ids.Contains(c.ClubId)))
+                .OrderBy(m => m.Timestamp)
+                .ToListAsync(ct);
+
+            var dto = new ClubRecordsDto();
+
+            int winStreak = 0, unbeatenStreak = 0, cleanSheetStreak = 0, scoringStreak = 0;
+            int maxWinStreak = 0, maxUnbeatenStreak = 0, maxCleanSheetStreak = 0, maxScoringStreak = 0;
+
+            RecordMatchDto? biggestWin = null;
+            RecordMatchDto? biggestLoss = null;
+            RecordMatchDto? highestScoring = null;
+            int bestWinDiff = 0, bestLossDiff = 0, bestTotal = 0;
+
+            foreach (var match in matches)
+            {
+                int ourCount = match.Clubs.Count(c => ids.Contains(c.ClubId));
+                if (ourCount != 1) continue;
+
+                var ourClub = match.Clubs.First(c => ids.Contains(c.ClubId));
+                var oppClub = match.Clubs.FirstOrDefault(c => !ids.Contains(c.ClubId));
+
+                int gf = ourClub.Goals;
+                int ga = oppClub?.Goals ?? 0;
+
+                dto.TotalMatches++;
+                dto.TotalGoalsFor += gf;
+                dto.TotalGoalsAgainst += ga;
+
+                bool isWin = gf > ga;
+                bool isDraw = gf == ga;
+                bool isLoss = gf < ga;
+                bool isCleanSheet = ga == 0;
+                bool isScoring = gf > 0;
+
+                if (isWin) dto.TotalWins++;
+                else if (isDraw) dto.TotalDraws++;
+                else dto.TotalLosses++;
+
+                if (isWin)
+                {
+                    winStreak++;
+                    unbeatenStreak++;
+                    int diff = gf - ga;
+                    if (diff > bestWinDiff)
+                    {
+                        bestWinDiff = diff;
+                        biggestWin = new RecordMatchDto
+                        {
+                            MatchId = match.MatchId,
+                            Timestamp = match.Timestamp,
+                            GoalsFor = gf,
+                            GoalsAgainst = ga,
+                            OpponentName = oppClub?.Details?.Name
+                        };
+                    }
+                }
+                else if (isDraw)
+                {
+                    winStreak = 0;
+                    unbeatenStreak++;
+                }
+                else
+                {
+                    winStreak = 0;
+                    unbeatenStreak = 0;
+                    int diff = ga - gf;
+                    if (diff > bestLossDiff)
+                    {
+                        bestLossDiff = diff;
+                        biggestLoss = new RecordMatchDto
+                        {
+                            MatchId = match.MatchId,
+                            Timestamp = match.Timestamp,
+                            GoalsFor = gf,
+                            GoalsAgainst = ga,
+                            OpponentName = oppClub?.Details?.Name
+                        };
+                    }
+                }
+
+                if (isCleanSheet) cleanSheetStreak++;
+                else cleanSheetStreak = 0;
+
+                if (isScoring) scoringStreak++;
+                else scoringStreak = 0;
+
+                if (winStreak > maxWinStreak) maxWinStreak = winStreak;
+                if (unbeatenStreak > maxUnbeatenStreak) maxUnbeatenStreak = unbeatenStreak;
+                if (cleanSheetStreak > maxCleanSheetStreak) maxCleanSheetStreak = cleanSheetStreak;
+                if (scoringStreak > maxScoringStreak) maxScoringStreak = scoringStreak;
+
+                int total = gf + ga;
+                if (total > bestTotal)
+                {
+                    bestTotal = total;
+                    highestScoring = new RecordMatchDto
+                    {
+                        MatchId = match.MatchId,
+                        Timestamp = match.Timestamp,
+                        GoalsFor = gf,
+                        GoalsAgainst = ga,
+                        OpponentName = oppClub?.Details?.Name
+                    };
+                }
+            }
+
+            dto.LongestWinStreak = maxWinStreak;
+            dto.LongestUnbeatenStreak = maxUnbeatenStreak;
+            dto.LongestCleanSheetStreak = maxCleanSheetStreak;
+            dto.LongestScoringStreak = maxScoringStreak;
+            dto.CurrentWinStreak = winStreak;
+            dto.CurrentUnbeatenStreak = unbeatenStreak;
+            dto.BiggestWin = biggestWin;
+            dto.BiggestLoss = biggestLoss;
+            dto.HighestScoringMatch = highestScoring;
+
+            var allMatchPlayers = matches
+                .SelectMany(m => m.MatchPlayers.Where(mp => ids.Contains(mp.ClubId))
+                    .Select(mp => new { Match = m, Mp = mp }))
+                .ToList();
+
+            static string ResolveName(MatchPlayerEntity mp) =>
+                !string.IsNullOrWhiteSpace(mp.ProName) ? mp.ProName : mp.Player?.Playername ?? "";
+
+            var byPlayerMatch = allMatchPlayers
+                .GroupBy(x => new { x.Mp.PlayerEntityId, x.Match.MatchId })
+                .Select(g => new
+                {
+                    g.Key.PlayerEntityId,
+                    g.Key.MatchId,
+                    Timestamp = g.First().Match.Timestamp,
+                    Goals = g.Sum(x => (int)x.Mp.Goals),
+                    Assists = g.Sum(x => (int)x.Mp.Assists),
+                    Saves = g.Sum(x => (int)x.Mp.Saves),
+                    Rating = g.Max(x => x.Mp.Rating),
+                    Name = g.Select(x => x.Mp).OrderByDescending(mp => mp.MatchId)
+                             .Select(mp => ResolveName(mp))
+                             .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? ""
+                })
+                .ToList();
+
+            var mostGoals = byPlayerMatch.OrderByDescending(x => x.Goals).FirstOrDefault();
+            if (mostGoals != null)
+                dto.MostGoalsInMatch = new RecordPlayerMatchDto { MatchId = mostGoals.MatchId, Timestamp = mostGoals.Timestamp, PlayerName = mostGoals.Name, Value = mostGoals.Goals };
+
+            var mostAssists = byPlayerMatch.OrderByDescending(x => x.Assists).FirstOrDefault();
+            if (mostAssists != null)
+                dto.MostAssistsInMatch = new RecordPlayerMatchDto { MatchId = mostAssists.MatchId, Timestamp = mostAssists.Timestamp, PlayerName = mostAssists.Name, Value = mostAssists.Assists };
+
+            var mostSaves = byPlayerMatch.OrderByDescending(x => x.Saves).FirstOrDefault();
+            if (mostSaves != null)
+                dto.MostSavesInMatch = new RecordPlayerMatchDto { MatchId = mostSaves.MatchId, Timestamp = mostSaves.Timestamp, PlayerName = mostSaves.Name, Value = mostSaves.Saves };
+
+            var highestRating = byPlayerMatch.OrderByDescending(x => x.Rating).FirstOrDefault();
+            if (highestRating != null)
+                dto.HighestRating = new RecordPlayerMatchDto { MatchId = highestRating.MatchId, Timestamp = highestRating.Timestamp, PlayerName = highestRating.Name, Value = (int)Math.Round(highestRating.Rating) };
+
+            var byPlayerCareer = allMatchPlayers
+                .GroupBy(x => x.Mp.PlayerEntityId)
+                .Select(g => new
+                {
+                    PlayerEntityId = g.Key,
+                    TotalRedCards = g.Sum(x => (int)x.Mp.Redcards),
+                    TotalMoM = g.Count(x => x.Mp.Mom),
+                    LastMatchId = g.OrderByDescending(x => x.Match.Timestamp).First().Match.MatchId,
+                    LastTimestamp = g.OrderByDescending(x => x.Match.Timestamp).First().Match.Timestamp,
+                    Name = g.OrderByDescending(x => x.Match.Timestamp)
+                             .Select(x => ResolveName(x.Mp))
+                             .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? ""
+                })
+                .ToList();
+
+            var mostRedCards = byPlayerCareer.OrderByDescending(x => x.TotalRedCards).FirstOrDefault();
+            if (mostRedCards != null)
+                dto.MostRedCardsCareer = new RecordPlayerMatchDto { MatchId = mostRedCards.LastMatchId, Timestamp = mostRedCards.LastTimestamp, PlayerName = mostRedCards.Name, Value = mostRedCards.TotalRedCards };
+
+            var mostMoM = byPlayerCareer.OrderByDescending(x => x.TotalMoM).FirstOrDefault();
+            if (mostMoM != null)
+                dto.MostMoMCareer = new RecordPlayerMatchDto { MatchId = mostMoM.LastMatchId, Timestamp = mostMoM.LastTimestamp, PlayerName = mostMoM.Name, Value = mostMoM.TotalMoM };
+
+            dto.HatTricks = byPlayerMatch
+                .Where(x => x.Goals >= 3)
+                .OrderByDescending(x => x.Timestamp)
+                .Take(50)
+                .Select(x => new HatTrickDto
+                {
+                    MatchId = x.MatchId,
+                    Timestamp = x.Timestamp,
+                    PlayerName = x.Name,
+                    Goals = x.Goals
+                })
+                .ToList();
+
+            return Ok(dto);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetClubRecords for clubIds={ClubIds}", clubIds);
+            return StatusCode(500, "Erro interno ao buscar recordes do clube.");
+        }
+    }
+
+    [HttpGet("opponents")]
+    public async Task<ActionResult<OpponentsAnalysisDto>> GetOpponentsAnalysis(
+        [FromQuery] string clubIds,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation("GetOpponentsAnalysis called for clubIds={ClubIds}", clubIds);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(clubIds))
+                return BadRequest("Informe 'clubIds'.");
+
+            var ids = clubIds
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => long.TryParse(s, out var v) ? (long?)v : null)
+                .Where(v => v.HasValue && v.Value > 0)
+                .Select(v => v!.Value)
+                .Distinct()
+                .ToList();
+
+            if (ids.Count == 0)
+                return BadRequest("Nenhum clubId válido em 'clubIds'.");
+
+            var matches = await _db.Matches
+                .AsNoTracking()
+                .Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Where(m => m.Clubs.Any(c => ids.Contains(c.ClubId)))
+                .OrderBy(m => m.Timestamp)
+                .ToListAsync(ct);
+
+            var opponentMap = new Dictionary<long, OpponentRecordDto>();
+            int totalProcessed = 0;
+
+            foreach (var match in matches)
+            {
+                int ourCount = match.Clubs.Count(c => ids.Contains(c.ClubId));
+                if (ourCount != 1) continue;
+
+                var ourClub = match.Clubs.First(c => ids.Contains(c.ClubId));
+                var oppClub = match.Clubs.FirstOrDefault(c => !ids.Contains(c.ClubId));
+                if (oppClub == null) continue;
+
+                totalProcessed++;
+
+                int gf = ourClub.Goals;
+                int ga = oppClub.Goals;
+
+                if (!opponentMap.TryGetValue(oppClub.ClubId, out var rec))
+                {
+                    rec = new OpponentRecordDto
+                    {
+                        ClubId = oppClub.ClubId,
+                        Name = oppClub.Details?.Name ?? $"Clube {oppClub.ClubId}"
+                    };
+                    opponentMap[oppClub.ClubId] = rec;
+                }
+
+                rec.Matches++;
+                rec.GoalsFor += gf;
+                rec.GoalsAgainst += ga;
+                rec.GoalDiff = rec.GoalsFor - rec.GoalsAgainst;
+                rec.LastMatch = match.Timestamp;
+
+                if (gf > ga)
+                {
+                    rec.Wins++;
+                    int diff = gf - ga;
+                    if (rec.BiggestWinMatchId == null || diff > (rec.BiggestWinGF - rec.BiggestWinGA))
+                    {
+                        rec.BiggestWinMatchId = match.MatchId;
+                        rec.BiggestWinGF = gf;
+                        rec.BiggestWinGA = ga;
+                    }
+                }
+                else if (gf < ga)
+                {
+                    rec.Losses++;
+                    int diff = ga - gf;
+                    if (rec.BiggestLossMatchId == null || diff > (rec.BiggestLossGA - rec.BiggestLossGF))
+                    {
+                        rec.BiggestLossMatchId = match.MatchId;
+                        rec.BiggestLossGF = gf;
+                        rec.BiggestLossGA = ga;
+                    }
+                }
+                else
+                {
+                    rec.Draws++;
+                }
+            }
+
+            foreach (var rec in opponentMap.Values)
+                rec.WinRate = rec.Matches > 0 ? Math.Round(rec.Wins * 100.0 / rec.Matches, 1) : 0;
+
+            var opponents = opponentMap.Values.OrderByDescending(o => o.Matches).ToList();
+
+            return Ok(new OpponentsAnalysisDto
+            {
+                TotalMatches = totalProcessed,
+                TotalOpponents = opponents.Count,
+                Opponents = opponents
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetOpponentsAnalysis for clubIds={ClubIds}", clubIds);
+            return StatusCode(500, "Erro interno ao buscar análise de adversários.");
+        }
+    }
+
     [HttpDelete("{clubId:long}/matches")]
     public async Task<IActionResult> DeleteMatchesByClub(long clubId, CancellationToken ct)
     {
