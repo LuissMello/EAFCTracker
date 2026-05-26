@@ -766,15 +766,20 @@ public class ClubsController : ControllerBase
                 .AsNoTracking()
                 .ToListAsync(ct);
 
-            var allClubIds = matches
-                .SelectMany(m => m.Clubs.Select(c => c.ClubId))
-                .Distinct().ToList();
+            var nullDivClubIds = matches
+                .SelectMany(m => m.Clubs)
+                .Where(c => c.CurrentDivision == null)
+                .Select(c => c.ClubId)
+                .Distinct()
+                .ToList();
 
-            var divByClub = await _db.OverallStats
-                .AsNoTracking()
-                .Where(os => allClubIds.Contains(os.ClubId))
-                .Select(os => new { os.ClubId, os.CurrentDivision })
-                .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct);
+            var fallbackDivByClub = nullDivClubIds.Count > 0
+                ? await _db.OverallStats
+                    .AsNoTracking()
+                    .Where(os => nullDivClubIds.Contains(os.ClubId))
+                    .Select(os => new { os.ClubId, os.CurrentDivision })
+                    .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct)
+                : new Dictionary<long, int?>();
 
             var items = new List<MatchResultDto>(matches.Count);
             foreach (var match in matches)
@@ -810,10 +815,12 @@ public class ClubsController : ControllerBase
                 };
                 if (dto.ClubADetails != null) dto.ClubADetails.Team = a.Team.ToString();
                 if (dto.ClubBDetails != null) dto.ClubBDetails.Team = b.Team.ToString();
-                if (dto.ClubADetails != null && divByClub.TryGetValue(a.ClubId, out var divA))
-                    dto.ClubADetails.CurrentDivision = divA;
-                if (dto.ClubBDetails != null && divByClub.TryGetValue(b.ClubId, out var divB))
-                    dto.ClubBDetails.CurrentDivision = divB;
+                if (dto.ClubADetails != null)
+                    dto.ClubADetails.CurrentDivision = a.CurrentDivision
+                        ?? (fallbackDivByClub.TryGetValue(a.ClubId, out var divA) ? divA : null);
+                if (dto.ClubBDetails != null)
+                    dto.ClubBDetails.CurrentDivision = b.CurrentDivision
+                        ?? (fallbackDivByClub.TryGetValue(b.ClubId, out var divB) ? divB : null);
                 items.Add(dto);
             }
 
@@ -891,16 +898,20 @@ public class ClubsController : ControllerBase
                 .AsNoTracking()
                 .ToListAsync(ct);
 
-            var allClubIds = matches
-                .SelectMany(m => m.Clubs.Select(c => c.ClubId))
+            var nullDivClubIds = matches
+                .SelectMany(m => m.Clubs)
+                .Where(c => c.CurrentDivision == null)
+                .Select(c => c.ClubId)
                 .Distinct()
                 .ToList();
 
-            var divByClub = await _db.OverallStats
-                .AsNoTracking()
-                .Where(os => allClubIds.Contains(os.ClubId))
-                .Select(os => new { os.ClubId, os.CurrentDivision })
-                .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct);
+            var fallbackDivByClub = nullDivClubIds.Count > 0
+                ? await _db.OverallStats
+                    .AsNoTracking()
+                    .Where(os => nullDivClubIds.Contains(os.ClubId))
+                    .Select(os => new { os.ClubId, os.CurrentDivision })
+                    .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct)
+                : new Dictionary<long, int?>();
 
             var items = new List<MatchResultDto>(matches.Count);
 
@@ -945,11 +956,13 @@ public class ClubsController : ControllerBase
                 if (dto.ClubADetails != null) dto.ClubADetails.Team = a.Team.ToString();
                 if (dto.ClubBDetails != null) dto.ClubBDetails.Team = b.Team.ToString();
 
-                if (dto.ClubADetails != null && divByClub.TryGetValue(a.ClubId, out var divA))
-                    dto.ClubADetails.CurrentDivision = divA;
+                if (dto.ClubADetails != null)
+                    dto.ClubADetails.CurrentDivision = a.CurrentDivision
+                        ?? (fallbackDivByClub.TryGetValue(a.ClubId, out var divA) ? divA : null);
 
-                if (dto.ClubBDetails != null && divByClub.TryGetValue(b.ClubId, out var divB))
-                    dto.ClubBDetails.CurrentDivision = divB;
+                if (dto.ClubBDetails != null)
+                    dto.ClubBDetails.CurrentDivision = b.CurrentDivision
+                        ?? (fallbackDivByClub.TryGetValue(b.ClubId, out var divB) ? divB : null);
 
                 items.Add(dto);
             }
@@ -1261,5 +1274,149 @@ public class ClubsController : ControllerBase
             ManOfTheMatchPlayerName = motmName,
             Disconnected = disconnected
         };
+    }
+
+    // GET /api/clubs/{clubId}/goals/analysis?from=2025-01-01&to=2025-12-31
+    [HttpGet("{clubId:long}/goals/analysis")]
+    public async Task<IActionResult> GetGoalAnalysis(
+        long clubId,
+        [FromQuery] DateTime from,
+        [FromQuery] DateTime to,
+        CancellationToken ct)
+    {
+        _logger.LogInformation("GetGoalAnalysis clubId={ClubId} from={From} to={To}", clubId, from, to);
+        try
+        {
+            var fromUtc = DateTime.SpecifyKind(from.Date, DateTimeKind.Utc);
+            var toUtc = DateTime.SpecifyKind(to.Date.AddDays(1).AddTicks(-1), DateTimeKind.Utc);
+
+            // Matches for this club in the range
+            var matchesInRange = await _db.MatchClubs
+                .AsNoTracking()
+                .Where(mc => mc.ClubId == clubId
+                          && mc.Match.Timestamp >= fromUtc
+                          && mc.Match.Timestamp <= toUtc)
+                .Select(mc => new { mc.MatchId, mc.Match.Timestamp, mc.Goals })
+                .ToListAsync(ct);
+
+            var matchIdList = matchesInRange.Select(m => m.MatchId).Distinct().ToList();
+            var totalGoals = matchesInRange.Sum(m => (int)m.Goals);
+            var timestampByMatch = matchesInRange
+                .GroupBy(m => m.MatchId)
+                .ToDictionary(g => g.Key, g => g.First().Timestamp);
+
+            // Goal links for this club in those matches
+            var goalLinks = await _db.MatchGoalLinks
+                .AsNoTracking()
+                .Where(g => matchIdList.Contains(g.MatchId) && g.ClubId == clubId)
+                .ToListAsync(ct);
+
+            // Resolve player names via MatchPlayers (ProName) with PlayerEntity fallback
+            var involvedIds = goalLinks
+                .SelectMany(g => new[] { (long?)g.ScorerPlayerEntityId, g.AssistPlayerEntityId, g.PreAssistPlayerEntityId })
+                .Where(id => id.HasValue).Select(id => id!.Value)
+                .Distinct().ToList();
+
+            Dictionary<long, string> nameMap = new();
+
+            if (involvedIds.Count > 0)
+            {
+                var mpNames = await _db.MatchPlayers
+                    .AsNoTracking()
+                    .Where(mp => matchIdList.Contains(mp.MatchId) && involvedIds.Contains(mp.PlayerEntityId))
+                    .Select(mp => new { mp.PlayerEntityId, mp.ProName, mp.MatchId })
+                    .ToListAsync(ct);
+
+                nameMap = mpNames
+                    .GroupBy(mp => mp.PlayerEntityId)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.OrderByDescending(mp => mp.MatchId)
+                              .Select(mp => mp.ProName)
+                              .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? "");
+
+                var missingIds = involvedIds.Where(id => !nameMap.ContainsKey(id) || string.IsNullOrWhiteSpace(nameMap[id])).ToList();
+                if (missingIds.Count > 0)
+                {
+                    var fallbacks = await _db.Players
+                        .AsNoTracking()
+                        .Where(p => missingIds.Contains(p.Id))
+                        .Select(p => new { p.Id, p.Playername })
+                        .ToListAsync(ct);
+
+                    foreach (var f in fallbacks)
+                        if (!string.IsNullOrWhiteSpace(f.Playername))
+                            nameMap[f.Id] = f.Playername;
+                }
+            }
+
+            string Resolve(long? id) =>
+                id.HasValue && nameMap.TryGetValue(id.Value, out var n) && !string.IsNullOrWhiteSpace(n) ? n : null!;
+
+            // Build link DTOs
+            var linkDtos = goalLinks
+                .Select(g => new GoalAnalysisLinkDto
+                {
+                    MatchId = g.MatchId,
+                    MatchTimestamp = timestampByMatch.TryGetValue(g.MatchId, out var ts) ? ts : DateTime.MinValue,
+                    ScorerName = Resolve(g.ScorerPlayerEntityId) ?? "Desconhecido",
+                    AssistName = g.AssistPlayerEntityId.HasValue ? Resolve(g.AssistPlayerEntityId) : null,
+                    PreAssistName = g.PreAssistPlayerEntityId.HasValue ? Resolve(g.PreAssistPlayerEntityId) : null,
+                })
+                .OrderByDescending(l => l.MatchTimestamp)
+                .ToList();
+
+            // Player aggregations
+            var playerMap = new Dictionary<string, GoalAnalysisPlayerDto>();
+            GoalAnalysisPlayerDto GetStat(string name)
+            {
+                if (!playerMap.TryGetValue(name, out var s))
+                    playerMap[name] = s = new GoalAnalysisPlayerDto { Name = name };
+                return s;
+            }
+
+            foreach (var l in linkDtos)
+            {
+                GetStat(l.ScorerName).Goals++;
+                GetStat(l.ScorerName).Total++;
+                if (!string.IsNullOrEmpty(l.AssistName)) { GetStat(l.AssistName).Assists++; GetStat(l.AssistName).Total++; }
+                if (!string.IsNullOrEmpty(l.PreAssistName)) { GetStat(l.PreAssistName).PreAssists++; GetStat(l.PreAssistName).Total++; }
+            }
+
+            var pairs = linkDtos
+                .Where(l => !string.IsNullOrEmpty(l.AssistName))
+                .GroupBy(l => (l.AssistName!, l.ScorerName))
+                .Select(g => new GoalAnalysisPairDto { From = g.Key.Item1, To = g.Key.ScorerName, Count = g.Count() })
+                .OrderByDescending(p => p.Count)
+                .ToList();
+
+            var trios = linkDtos
+                .Where(l => !string.IsNullOrEmpty(l.PreAssistName) && !string.IsNullOrEmpty(l.AssistName))
+                .GroupBy(l => (l.PreAssistName!, l.AssistName!, l.ScorerName))
+                .Select(g => new GoalAnalysisTrioDto { Pre = g.Key.Item1, Assist = g.Key.Item2, Scorer = g.Key.ScorerName, Count = g.Count() })
+                .OrderByDescending(t => t.Count)
+                .ToList();
+
+            return Ok(new GoalAnalysisResponseDto
+            {
+                ClubId = clubId,
+                From = fromUtc,
+                To = toUtc,
+                TotalMatches = matchIdList.Count,
+                TotalGoals = totalGoals,
+                LinkedGoals = goalLinks.Count,
+                TotalAssists = goalLinks.Count(g => g.AssistPlayerEntityId.HasValue),
+                TotalPreAssists = goalLinks.Count(g => g.PreAssistPlayerEntityId.HasValue),
+                Players = playerMap.Values.OrderByDescending(p => p.Total).ThenByDescending(p => p.Goals).ToList(),
+                Pairs = pairs,
+                Trios = trios,
+                GoalLinks = linkDtos,
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetGoalAnalysis clubId={ClubId}", clubId);
+            return StatusCode(500, "Erro interno ao buscar análise de gols.");
+        }
     }
 }
