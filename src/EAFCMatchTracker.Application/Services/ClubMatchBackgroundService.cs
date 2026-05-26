@@ -1,4 +1,7 @@
 using EAFCMatchTracker.Application.Interfaces;
+using EAFCMatchTracker.Domain.Entities;
+using EAFCMatchTracker.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -84,6 +87,34 @@ public sealed class ClubMatchBackgroundService : BackgroundService
         await Task.WhenAll(tasks);
 
         _logger.LogInformation("Ciclo concluído em {Elapsed}ms", sw.ElapsedMilliseconds);
+
+        await UpdateFetchAuditAsync(ct);
+    }
+
+    private async Task UpdateFetchAuditAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<EAFCContext>();
+            var now = DateTimeOffset.UtcNow;
+
+            var row = await db.SystemFetchAudits.SingleOrDefaultAsync(x => x.Id == 1, ct);
+            if (row == null)
+            {
+                db.SystemFetchAudits.Add(new SystemFetchAudit { Id = 1, LastFetchedAt = now });
+            }
+            else
+            {
+                row.LastFetchedAt = now;
+            }
+
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao atualizar auditoria de busca após ciclo automático.");
+        }
     }
 
     private async Task FetchWithSemaphoreAsync(string clubId, string matchType, CancellationToken ct)
