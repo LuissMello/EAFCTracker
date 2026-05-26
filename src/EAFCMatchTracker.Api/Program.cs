@@ -89,6 +89,7 @@ builder.Services.AddDbContext<EAFCContext>(options =>
                 maxRetryCount: 5,
                 maxRetryDelay: TimeSpan.FromSeconds(10),
                 errorCodesToAdd: null);
+            npgsqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
         });
 
         options.EnableSensitiveDataLogging();
