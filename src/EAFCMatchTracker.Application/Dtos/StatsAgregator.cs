@@ -114,6 +114,7 @@ namespace EAFCMatchTracker.Application.Dtos
                     return new PlayerStatisticsDto
                     {
                         PlayerId = g.Key,
+                        PlayerEntityId = g.Key,
                         PlayerName = player?.Playername ?? "Unknown",
                         ClubId = player?.ClubId ?? 0,
                         ProHeight = matchPlayer.ProHeight,
@@ -453,8 +454,8 @@ namespace EAFCMatchTracker.Application.Dtos
 
                     return new PlayerStatisticsDto
                     {
-                        // Usa o PlayerId global na saída (se o seu DTO já é long, ajuste o tipo)
                         PlayerId = repr.Player.PlayerId,
+                        PlayerEntityId = repr.PlayerEntityId,
                         PlayerName = repr.Player.Playername ?? "Unknown",
                         // Como estamos agrupando clubes, não faz sentido devolver um único ClubId real.
                         // Use 0 (ou null se seu DTO permitir) apenas para preencher o contrato atual.

@@ -4,6 +4,7 @@ public class PlayerStatisticsDto
 {
     public DateTime Date { get; set; }
     public long PlayerId { get; set; }
+    public long PlayerEntityId { get; set; }
     public string PlayerName { get; set; }
     public long ClubId { get; set; }
 
