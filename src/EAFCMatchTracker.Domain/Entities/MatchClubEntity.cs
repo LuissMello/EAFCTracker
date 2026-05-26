@@ -22,6 +22,7 @@ public class MatchClubEntity
     public short Ties { get; set; }
     public bool WinnerByDnf { get; set; }
     public short Wins { get; set; }
+    public int? CurrentDivision { get; set; }
 
     public ClubDetailsEntity Details { get; set; }
 }

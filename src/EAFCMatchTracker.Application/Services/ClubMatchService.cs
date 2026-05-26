@@ -120,10 +120,12 @@ public class ClubMatchService : IClubMatchService
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"] ?? "";
-        var searchTpl = _config["EAFCSettings:SearchCurrentSeasonLeaderboardEndpoint"] ?? "/currentSeasonLeaderboard/search?platform=common-gen5&clubName={0}";
+        var currentSeasonTpl = _config["EAFCSettings:SearchCurrentSeasonLeaderboardEndpoint"] ?? "/currentSeasonLeaderboard/search?platform=common-gen5&clubName={0}";
+        var allTimeTpl = _config["EAFCSettings:SearchAllTimeLeaderboardEndpoint"] ?? _config["EAFCSettings:SearchClubsEndpoint"] ?? "/allTimeLeaderboard/search?platform=common-gen5&clubName={0}";
+        var threshold = int.TryParse(_config["EAFCSettings:DivisionThresholdForAllTime"], out var t) ? t : 5;
 
-        var uri = BuildUri(baseUrl, string.Format(searchTpl, Uri.EscapeDataString(clubName)));
-        _logger.LogInformation("Built URI: {Uri}", uri);
+        var uri = BuildUri(baseUrl, string.Format(currentSeasonTpl, Uri.EscapeDataString(clubName)));
+        _logger.LogInformation("Fetching currentSeasonLeaderboard: {Uri}", uri);
 
         var json = await _eaHttpClient.GetStringAsync(uri, ct);
         if (json is null) return null;
@@ -134,7 +136,26 @@ public class ClubMatchService : IClubMatchService
         var pick = byId ?? payload.FirstOrDefault();
         if (pick == null) return null;
 
-        return ToNullableInt(pick.currentDivision);
+        var division = ToNullableInt(pick.currentDivision);
+
+        if (division.HasValue && division.Value > threshold)
+        {
+            _logger.LogInformation("Division {Division} > {Threshold}, switching to allTimeLeaderboard for club {ClubId}", division.Value, threshold, clubId);
+            var allTimeUri = BuildUri(baseUrl, string.Format(allTimeTpl, Uri.EscapeDataString(clubName)));
+            _logger.LogInformation("Fetching allTimeLeaderboard: {Uri}", allTimeUri);
+
+            var allTimeJson = await _eaHttpClient.GetStringAsync(allTimeUri, ct);
+            if (allTimeJson is not null)
+            {
+                var allTimePayload = JsonSerializer.Deserialize<List<SearchClubResult>>(allTimeJson, _jsonOpts) ?? new();
+                var allTimeById = allTimePayload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
+                var allTimePick = allTimeById ?? allTimePayload.FirstOrDefault();
+                if (allTimePick != null)
+                    return ToNullableInt(allTimePick.currentDivision);
+            }
+        }
+
+        return division;
     }
 
     private async Task<MembersStatsResponse?> FetchMembersStatsAsync(long clubId, CancellationToken ct)
@@ -305,6 +326,7 @@ public class ClubMatchService : IClubMatchService
                         Ties = Convert.ToInt16(club.Ties),
                         Wins = Convert.ToInt16(club.Wins),
                         WinnerByDnf = club.WinnerByDnf == "1",
+                        CurrentDivision = preFetchedDivisions.TryGetValue(clubId, out var matchDiv) ? matchDiv : null,
                         Details = details
                     };
 
