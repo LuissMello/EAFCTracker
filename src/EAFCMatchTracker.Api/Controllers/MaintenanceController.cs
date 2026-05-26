@@ -726,11 +726,15 @@ public class MaintenanceController : ControllerBase
     private async Task<int?> FetchCurrentDivisionByNameAsync(string clubName, long clubId, CancellationToken ct)
     {
         var baseUrl = _config["EAFCSettings:BaseUrl"];
-        var searchTpl = _config["EAFCSettings:SearchCurrentSeasonLeaderboardEndpoint"]
-                        ?? "/currentSeasonLeaderboard/search?platform=common-gen5&clubName={0}";
+        var currentSeasonTpl = _config["EAFCSettings:SearchCurrentSeasonLeaderboardEndpoint"]
+                               ?? "/currentSeasonLeaderboard/search?platform=common-gen5&clubName={0}";
+        var allTimeTpl = _config["EAFCSettings:SearchAllTimeLeaderboardEndpoint"]
+                         ?? _config["EAFCSettings:SearchClubsEndpoint"]
+                         ?? "/allTimeLeaderboard/search?platform=common-gen5&clubName={0}";
+        var threshold = int.TryParse(_config["EAFCSettings:DivisionThresholdForAllTime"], out var t) ? t : 5;
 
         EnsureBaseUrl(baseUrl);
-        var uri = BuildUri(baseUrl!, string.Format(searchTpl, Uri.EscapeDataString(clubName)));
+        var uri = BuildUri(baseUrl!, string.Format(currentSeasonTpl, Uri.EscapeDataString(clubName)));
 
         var json = await _eaHttpClient.GetStringAsync(uri, ct);
         if (json is null) return null;
@@ -751,7 +755,33 @@ public class MaintenanceController : ControllerBase
         var pick = byId ?? payload.FirstOrDefault();
         if (pick == null) return null;
 
-        return ToNullableInt(pick.currentDivision);
+        var division = ToNullableInt(pick.currentDivision);
+
+        if (division.HasValue && division.Value > threshold)
+        {
+            var allTimeUri = BuildUri(baseUrl!, string.Format(allTimeTpl, Uri.EscapeDataString(clubName)));
+
+            var allTimeJson = await _eaHttpClient.GetStringAsync(allTimeUri, ct);
+            if (allTimeJson is not null)
+            {
+                List<SearchClubResult> allTimePayload;
+                try
+                {
+                    allTimePayload = JsonSerializer.Deserialize<List<SearchClubResult>>(allTimeJson, options) ?? new();
+                }
+                catch
+                {
+                    allTimePayload = new();
+                }
+
+                var allTimeById = allTimePayload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
+                var allTimePick = allTimeById ?? allTimePayload.FirstOrDefault();
+                if (allTimePick != null)
+                    return ToNullableInt(allTimePick.currentDivision);
+            }
+        }
+
+        return division;
     }
 
     private async Task<MembersStatsResponse?> FetchMembersStatsAsync(long clubId, CancellationToken ct)
@@ -858,4 +888,146 @@ public class MaintenanceController : ControllerBase
     }
 
     private static int? ToNullableInt(string? s) => int.TryParse(s, out var v) ? v : (int?)null;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET api/Maintenance/matches/recent-aggregates?count=N
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HttpGet("matches/recent-aggregates")]
+    public async Task<ActionResult<RecentMatchesWithAggregatesDto>> GetRecentMatchesWithAggregates(
+        [FromQuery] int count = 10,
+        CancellationToken ct = default)
+    {
+        const int MaxCount = 200;
+        if (count < 1) count = 1;
+        if (count > MaxCount) count = MaxCount;
+
+        var matches = await _db.Matches
+            .AsNoTracking()
+            .OrderByDescending(m => m.Timestamp)
+            .Take(count)
+            .Include(m => m.Clubs).ThenInclude(c => c.Details)
+            .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+            .ToListAsync(ct);
+
+        var matchDtos = matches.Select(m =>
+        {
+            // ── Clubes (placar + details completos) ───────────────────────────
+            var clubs = m.Clubs.Select(c => new MatchClubDto
+            {
+                ClubId       = c.ClubId,
+                Date         = c.Date,
+                GameNumber   = c.GameNumber,
+                Goals        = c.Goals,
+                GoalsAgainst = c.GoalsAgainst,
+                Losses       = c.Losses,
+                MatchType    = c.MatchType,
+                Result       = c.Result,
+                Score        = c.Score,
+                SeasonId     = c.SeasonId,
+                Team         = c.Team,
+                Ties         = c.Ties,
+                Wins         = c.Wins,
+                WinnerByDnf  = c.WinnerByDnf,
+                Details      = c.Details == null ? null : new ClubDetailsDto
+                {
+                    ClubId            = c.Details.ClubId,
+                    Name              = c.Details.Name,
+                    RegionId          = c.Details.RegionId,
+                    TeamId            = c.Details.TeamId,
+                    StadName          = c.Details.StadName,
+                    KitId             = c.Details.KitId,
+                    CustomKitId       = c.Details.CustomKitId,
+                    CustomAwayKitId   = c.Details.CustomAwayKitId,
+                    CustomThirdKitId  = c.Details.CustomThirdKitId,
+                    CustomKeeperKitId = c.Details.CustomKeeperKitId,
+                    KitColor1         = c.Details.KitColor1,
+                    KitColor2         = c.Details.KitColor2,
+                    KitColor3         = c.Details.KitColor3,
+                    KitColor4         = c.Details.KitColor4,
+                    KitAColor1        = c.Details.KitAColor1,
+                    KitAColor2        = c.Details.KitAColor2,
+                    KitAColor3        = c.Details.KitAColor3,
+                    KitAColor4        = c.Details.KitAColor4,
+                    KitThrdColor1     = c.Details.KitThrdColor1,
+                    KitThrdColor2     = c.Details.KitThrdColor2,
+                    KitThrdColor3     = c.Details.KitThrdColor3,
+                    KitThrdColor4     = c.Details.KitThrdColor4,
+                    DCustomKit        = c.Details.DCustomKit,
+                    CrestColor        = c.Details.CrestColor,
+                    CrestAssetId      = c.Details.CrestAssetId,
+                    SelectedKitType   = c.Details.SelectedKitType
+                }
+            }).ToList();
+
+            // ── Jogadores (estatísticas individuais da partida) ───────────────
+            var players = m.MatchPlayers.Select(p => new MatchPlayerDto
+            {
+                PlayerId       = p.Player?.PlayerId ?? p.PlayerEntityId,
+                Id             = p.PlayerEntityId,
+                ClubId         = p.ClubId,
+                Playername     = p.Player?.Playername ?? p.ProName ?? p.PlayerEntityId.ToString(),
+                Pos            = p.Pos,
+                Namespace      = p.Namespace,
+                Goals          = p.Goals,
+                Assists        = p.Assists,
+                PreAssists     = p.PreAssists,
+                Rating         = p.Rating,
+                Cleansheetsany = p.Cleansheetsany,
+                Cleansheetsdef = p.Cleansheetsdef,
+                Cleansheetsgk  = p.Cleansheetsgk,
+                Losses         = p.Losses,
+                Mom            = p.Mom,
+                Passattempts   = p.Passattempts,
+                Passesmade     = p.Passesmade,
+                Realtimegame   = p.Realtimegame,
+                Realtimeidle   = p.Realtimeidle,
+                Redcards       = p.Redcards,
+                Saves          = p.Saves,
+                Score          = p.Score,
+                Shots          = p.Shots,
+                Tackleattempts = p.Tackleattempts,
+                Tacklesmade    = p.Tacklesmade,
+                Vproattr       = p.Vproattr,
+                Vprohackreason = p.Vprohackreason,
+                Wins           = p.Wins,
+                Stats          = null   // atributos do pro via /api/Matches/{id}/players/{pid}/statistics
+            }).ToList();
+
+            // ── Estatísticas agregadas ────────────────────────────────────────
+            var overall     = StatsAggregator.BuildOverallForSingleMatch(m.MatchPlayers);
+            var playerStats = StatsAggregator.BuildPerPlayer(m.MatchPlayers, includeDisconnected: true);
+            var clubStats   = StatsAggregator.BuildPerClub(m.MatchPlayers, m.Clubs.ToDictionary(c => c.ClubId));
+
+            // ── Event-aggregates (EA FC post-game) ───────────────────────────
+            var eventAggregates = MatchAggregateParser.BuildClubAggregates(m.Clubs, m.MatchPlayers);
+
+            return new FullMatchDataDto
+            {
+                MatchId         = m.MatchId,
+                Timestamp       = m.Timestamp,
+                MatchType       = m.MatchType.ToString(),
+                Clubs           = clubs,
+                Players         = players,
+                Statistics      = new MatchStatisticsResponseDto
+                {
+                    Overall = overall,
+                    Players = playerStats,
+                    Clubs   = clubStats
+                },
+                EventAggregates = eventAggregates
+            };
+        }).ToList();
+
+        var response = new RecentMatchesWithAggregatesDto
+        {
+            RequestedCount   = count,
+            ReturnedCount    = matchDtos.Count,
+            Categories       = MatchEventDefinitions.Categories.ToList(),
+            EventDefinitions = MatchEventDefinitions.All.ToList(),
+            Matches          = matchDtos
+        };
+
+        return Ok(response);
+    }
 }

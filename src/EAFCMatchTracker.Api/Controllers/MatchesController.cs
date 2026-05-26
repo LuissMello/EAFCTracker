@@ -127,6 +127,42 @@ public class MatchesController : ControllerBase
         }
     }
 
+    [HttpGet("{matchId:long}/event-aggregates")]
+    public async Task<ActionResult<MatchEventAggregatesResponseDto>> GetMatchEventAggregates(long matchId, CancellationToken ct)
+    {
+        try
+        {
+            _logger.LogInformation("Getting event aggregates for match: {MatchId}", matchId);
+
+            var match = await _db.Matches
+                .AsNoTracking()
+                .Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .FirstOrDefaultAsync(m => m.MatchId == matchId, ct);
+
+            if (match == null)
+            {
+                _logger.LogWarning("Match not found for event aggregates: {MatchId}", matchId);
+                return NotFound();
+            }
+
+            var response = new MatchEventAggregatesResponseDto
+            {
+                Categories       = MatchEventDefinitions.Categories.ToList(),
+                EventDefinitions = MatchEventDefinitions.All.ToList(),
+                Clubs            = MatchAggregateParser.BuildClubAggregates(match.Clubs, match.MatchPlayers)
+            };
+
+            _logger.LogInformation("Successfully retrieved event aggregates for match: {MatchId}", matchId);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error while getting event aggregates for match: {MatchId}", matchId);
+            return StatusCode(500, "Internal server error.");
+        }
+    }
+
     [HttpGet("{matchId:long}/players/{playerId:long}/statistics")]
     public async Task<ActionResult<MatchPlayerStatsDto>> GetPlayerStatisticsByMatchAndPlayer(long matchId, long playerId, CancellationToken ct)
     {
