@@ -1,5 +1,8 @@
-using EAFCMatchTracker.Application.Services;
 using EAFCMatchTracker.Application.Interfaces;
+using EAFCMatchTracker.Application.Interfaces.Repositories;
+using EAFCMatchTracker.Application.Interfaces.Services;
+using EAFCMatchTracker.Application.Repositories;
+using EAFCMatchTracker.Application.Services;
 using EAFCMatchTracker.Domain.Settings;
 using EAFCMatchTracker.Infrastructure.Data;
 using EAFCMatchTracker.Infrastructure.Http;
@@ -22,6 +25,23 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.AddHostedService<ClubMatchBackgroundService>();
 builder.Services.AddScoped<IClubMatchService, ClubMatchService>();
+
+// Repositories
+builder.Services.AddScoped<IClubRepository, ClubRepository>();
+builder.Services.AddScoped<IMatchRepository, MatchRepository>();
+builder.Services.AddScoped<IPlayerRepository, PlayerRepository>();
+builder.Services.AddScoped<IGoalRepository, GoalRepository>();
+builder.Services.AddScoped<IFetchRepository, FetchRepository>();
+
+// Services
+builder.Services.AddScoped<IClubService, ClubService>();
+builder.Services.AddScoped<IMatchService, MatchService>();
+builder.Services.AddScoped<IPlayerService, PlayerService>();
+builder.Services.AddScoped<ICalendarService, CalendarService>();
+builder.Services.AddScoped<ITrendsService, TrendsService>();
+builder.Services.AddScoped<IGoalAnalysisService, GoalAnalysisService>();
+builder.Services.AddScoped<IMaintenanceService, MaintenanceService>();
+builder.Services.AddScoped<IFetchService, FetchService>();
 
 builder.Services.AddHttpClient<IEAHttpClient, EAHttpClient>()
     .ConfigureHttpClient((sp, client) =>
