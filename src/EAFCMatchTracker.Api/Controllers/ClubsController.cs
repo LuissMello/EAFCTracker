@@ -1643,55 +1643,52 @@ public class ClubsController : ControllerBase
                 .GroupBy(m => m.MatchId)
                 .ToDictionary(g => g.Key, g => g.First().Timestamp);
 
-            // Goal links for this club in those matches
+            // Goal links — used only for pairs, trios and pass flow
             var goalLinks = await _db.MatchGoalLinks
                 .AsNoTracking()
                 .Where(g => matchIdList.Contains(g.MatchId) && g.ClubId == clubId)
                 .ToListAsync(ct);
 
-            // Resolve player names via MatchPlayers (ProName) with PlayerEntity fallback
+            // MatchPlayers with Player loaded — source of truth for goals/assists/preassists
+            // (identical logic to BuildPerPlayerMergedByGlobalId used by the stats page)
+            var allMatchPlayers = await _db.MatchPlayers
+                .AsNoTracking()
+                .Include(mp => mp.Player)
+                .Where(mp => matchIdList.Contains(mp.MatchId) && mp.ClubId == clubId)
+                .ToListAsync(ct);
+
+            // Name map keyed by PlayerEntityId (used to resolve goal link names)
+            var nameMap = allMatchPlayers
+                .Where(mp => mp.Player != null)
+                .GroupBy(mp => mp.PlayerEntityId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderByDescending(mp => mp.MatchId)
+                          .Select(mp => !string.IsNullOrWhiteSpace(mp.ProName) ? mp.ProName : mp.Player?.Playername)
+                          .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? "");
+
+            // Fallback names for goal links that reference players not in our MatchPlayers
             var involvedIds = goalLinks
                 .SelectMany(g => new[] { (long?)g.ScorerPlayerEntityId, g.AssistPlayerEntityId, g.PreAssistPlayerEntityId })
-                .Where(id => id.HasValue).Select(id => id!.Value)
-                .Distinct().ToList();
+                .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToList();
 
-            Dictionary<long, string> nameMap = new();
-
-            if (involvedIds.Count > 0)
+            var missingIds = involvedIds.Where(id => !nameMap.ContainsKey(id) || string.IsNullOrWhiteSpace(nameMap[id])).ToList();
+            if (missingIds.Count > 0)
             {
-                var mpNames = await _db.MatchPlayers
+                var fallbacks = await _db.Players
                     .AsNoTracking()
-                    .Where(mp => matchIdList.Contains(mp.MatchId) && involvedIds.Contains(mp.PlayerEntityId))
-                    .Select(mp => new { mp.PlayerEntityId, mp.ProName, mp.MatchId })
+                    .Where(p => missingIds.Contains(p.Id))
+                    .Select(p => new { p.Id, p.Playername })
                     .ToListAsync(ct);
-
-                nameMap = mpNames
-                    .GroupBy(mp => mp.PlayerEntityId)
-                    .ToDictionary(
-                        g => g.Key,
-                        g => g.OrderByDescending(mp => mp.MatchId)
-                              .Select(mp => mp.ProName)
-                              .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? "");
-
-                var missingIds = involvedIds.Where(id => !nameMap.ContainsKey(id) || string.IsNullOrWhiteSpace(nameMap[id])).ToList();
-                if (missingIds.Count > 0)
-                {
-                    var fallbacks = await _db.Players
-                        .AsNoTracking()
-                        .Where(p => missingIds.Contains(p.Id))
-                        .Select(p => new { p.Id, p.Playername })
-                        .ToListAsync(ct);
-
-                    foreach (var f in fallbacks)
-                        if (!string.IsNullOrWhiteSpace(f.Playername))
-                            nameMap[f.Id] = f.Playername;
-                }
+                foreach (var f in fallbacks)
+                    if (!string.IsNullOrWhiteSpace(f.Playername))
+                        nameMap[f.Id] = f.Playername;
             }
 
             string Resolve(long? id) =>
                 id.HasValue && nameMap.TryGetValue(id.Value, out var n) && !string.IsNullOrWhiteSpace(n) ? n : null!;
 
-            // Build link DTOs
+            // Build link DTOs (pairs, trios, pass flow)
             var linkDtos = goalLinks
                 .Select(g => new GoalAnalysisLinkDto
                 {
@@ -1704,22 +1701,30 @@ public class ClubsController : ControllerBase
                 .OrderByDescending(l => l.MatchTimestamp)
                 .ToList();
 
-            // Player aggregations
-            var playerMap = new Dictionary<string, GoalAnalysisPlayerDto>();
-            GoalAnalysisPlayerDto GetStat(string name)
-            {
-                if (!playerMap.TryGetValue(name, out var s))
-                    playerMap[name] = s = new GoalAnalysisPlayerDto { Name = name };
-                return s;
-            }
-
-            foreach (var l in linkDtos)
-            {
-                GetStat(l.ScorerName).Goals++;
-                GetStat(l.ScorerName).Total++;
-                if (!string.IsNullOrEmpty(l.AssistName)) { GetStat(l.AssistName).Assists++; GetStat(l.AssistName).Total++; }
-                if (!string.IsNullOrEmpty(l.PreAssistName)) { GetStat(l.PreAssistName).PreAssists++; GetStat(l.PreAssistName).Total++; }
-            }
+            // Player participation ranking — group by global PlayerId (same as BuildPerPlayerMergedByGlobalId)
+            var playerMap = allMatchPlayers
+                .Where(mp => mp.Player != null)
+                .GroupBy(mp => mp.Player.PlayerId)
+                .Select(g =>
+                {
+                    var repr = g.OrderByDescending(mp => mp.MatchId).First();
+                    var name = !string.IsNullOrWhiteSpace(repr.ProName)
+                        ? repr.ProName
+                        : repr.Player?.Playername ?? "Desconhecido";
+                    var goals    = g.Sum(mp => (int)mp.Goals);
+                    var assists  = g.Sum(mp => (int)mp.Assists);
+                    var pre      = g.Sum(mp => (int)mp.PreAssists);
+                    return new GoalAnalysisPlayerDto
+                    {
+                        Name       = name,
+                        Goals      = goals,
+                        Assists    = assists,
+                        PreAssists = pre,
+                        Total      = goals + assists + pre,
+                    };
+                })
+                .Where(p => p.Total > 0)
+                .ToDictionary(p => p.Name);
 
             var pairs = linkDtos
                 .Where(l => !string.IsNullOrEmpty(l.AssistName))
