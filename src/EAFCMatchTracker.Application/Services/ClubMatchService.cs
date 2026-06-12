@@ -334,17 +334,8 @@ public class ClubMatchService : IClubMatchService
                     var div = preFetchedDivisions.TryGetValue(clubId, out var cd) ? cd : null;
                     if (overall != null)
                     {
-                        var existingEntity = await _db.OverallStats.FirstOrDefaultAsync(x => x.ClubId == clubId, ct);
-                        if (existingEntity == null)
-                        {
-                            var entity = MapToEntity(clubId, overall, div);
-                            await _db.OverallStats.AddAsync(entity, ct);
-                        }
-                        else
-                        {
-                            MapToEntity(clubId, overall, div, existingEntity);
-                            _db.OverallStats.Update(existingEntity);
-                        }
+                        var entity = MapToEntity(clubId, matchId, overall, div);
+                        await _db.OverallStats.AddAsync(entity, ct);
                         await _db.SaveChangesAsync(ct);
                     }
 
@@ -563,6 +554,36 @@ public class ClubMatchService : IClubMatchService
         });
     }
 
+    /// <summary>
+    /// Extrai o valor de um event ID específico dos campos match_event_aggregate_0~3.
+    /// Formato de cada campo: "id:valor,id:valor,..."
+    /// Retorna 0 se o ID não for encontrado.
+    /// </summary>
+    private static short ParseAggregateEvent(Player data, string eventId)
+    {
+        ReadOnlySpan<string?> fields =
+        [
+            data.MatchEventAggregate0,
+            data.MatchEventAggregate1,
+            data.MatchEventAggregate2,
+            data.MatchEventAggregate3,
+        ];
+
+        foreach (var field in fields)
+        {
+            if (string.IsNullOrEmpty(field)) continue;
+            foreach (var pair in field.Split(','))
+            {
+                var sep = pair.IndexOf(':');
+                if (sep < 1) continue;
+                if (pair.AsSpan(0, sep).Trim().SequenceEqual(eventId.AsSpan()) &&
+                    short.TryParse(pair.AsSpan(sep + 1).Trim(), out var v))
+                    return v;
+            }
+        }
+        return 0;
+    }
+
     private static short SafeShort(object value)
         => short.TryParse(Convert.ToString(value), out var s) ? s : (short)0;
 
@@ -578,9 +599,9 @@ public class ClubMatchService : IClubMatchService
         return Math.Round(scaled, 2, MidpointRounding.AwayFromZero);
     }
 
-    private static OverallStatsEntity MapToEntity(long clubId, Domain.Models.OverallStats src, int? div, OverallStatsEntity? target = null)
+    private static OverallStatsEntity MapToEntity(long clubId, long matchId, Domain.Models.OverallStats src, int? div)
     {
-        var o = target ?? new OverallStatsEntity { ClubId = clubId };
+        var o = new OverallStatsEntity { ClubId = clubId, MatchId = matchId };
         o.BestDivision = src.BestDivision;
         o.BestFinishGroup = src.BestFinishGroup;
         o.GamesPlayed = src.GamesPlayed;

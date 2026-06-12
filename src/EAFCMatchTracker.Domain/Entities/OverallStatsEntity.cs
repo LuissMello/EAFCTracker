@@ -4,6 +4,7 @@ public class OverallStatsEntity
 {
     public long Id { get; set; }
     public long ClubId { get; set; }
+    public long? MatchId { get; set; }
     public string? BestDivision { get; set; }
     public string? BestFinishGroup { get; set; }
     public string? GamesPlayed { get; set; }

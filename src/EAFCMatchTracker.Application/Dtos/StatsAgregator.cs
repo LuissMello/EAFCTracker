@@ -366,6 +366,7 @@ namespace EAFCMatchTracker.Application.Dtos
             return entities.Select(o => new ClubOverallStatsDto
             {
                 ClubId = o.ClubId,
+                MatchId = o.MatchId,
                 BestDivision = o.BestDivision,
                 BestFinishGroup = o.BestFinishGroup,
                 GamesPlayed = o.GamesPlayed,
@@ -385,7 +386,7 @@ namespace EAFCMatchTracker.Application.Dtos
                 CurrentDivision = o.CurrentDivision.ToString(),
                 UpdatedAtUtc = o.UpdatedAtUtc
             })
-            .OrderBy(x => x.ClubId)
+            .OrderByDescending(x => x.UpdatedAtUtc)
             .ToList();
         }
 

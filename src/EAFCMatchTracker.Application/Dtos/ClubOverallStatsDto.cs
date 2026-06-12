@@ -3,6 +3,7 @@ namespace EAFCMatchTracker.Application.Dtos;
 public sealed class ClubOverallStatsDto
 {
     public long ClubId { get; set; }
+    public long? MatchId { get; set; }
     public string? BestDivision { get; set; }
     public string? BestFinishGroup { get; set; }
     public string? FinishesInDivision1Group1 { get; set; }

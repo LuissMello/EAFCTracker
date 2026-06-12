@@ -95,20 +95,52 @@ public class ClubsController : ControllerBase
     }
 
     [HttpGet("{clubId:long}/overall")]
-    public async Task<ActionResult<List<ClubOverallStatsDto>>> GetClubOverall(long clubId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<ClubOverallStatsDto>>> GetClubOverall(
+        long clubId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken ct = default)
     {
-        _logger.LogInformation("GetClubOverall called for clubId={ClubId}", clubId);
+        _logger.LogInformation("GetClubOverall called for clubId={ClubId} page={Page} pageSize={PageSize}", clubId, page, pageSize);
         try
         {
             if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+            if (page < 1) page = 1;
+            if (pageSize < 1) pageSize = 20;
+            if (pageSize > 200) pageSize = 200;
 
-            var result = await _clubService.GetOverallAsync(clubId, ct);
+            var result = await _clubService.GetOverallPagedAsync(clubId, page, pageSize, ct);
             return Ok(result);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in GetClubOverall for clubId={ClubId}", clubId);
             return StatusCode(500, "Erro interno ao buscar estatísticas gerais.");
+        }
+    }
+
+    [HttpGet("{clubId:long}/matches/overall")]
+    public async Task<ActionResult<PagedResult<MatchWithOverallStatsDto>>> GetMatchesWithOverall(
+        long clubId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation("GetMatchesWithOverall called for clubId={ClubId} page={Page} pageSize={PageSize}", clubId, page, pageSize);
+        try
+        {
+            if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+            if (page < 1) page = 1;
+            if (pageSize < 1) pageSize = 10;
+            if (pageSize > 100) pageSize = 100;
+
+            var result = await _clubService.GetMatchesWithOverallAsync(clubId, page, pageSize, ct);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetMatchesWithOverall for clubId={ClubId}", clubId);
+            return StatusCode(500, "Erro interno ao buscar partidas com estatísticas gerais.");
         }
     }
 

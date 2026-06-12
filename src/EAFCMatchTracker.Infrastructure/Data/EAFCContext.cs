@@ -97,8 +97,7 @@ public class EAFCContext : DbContext
             .HasKey(o => o.Id);
 
         modelBuilder.Entity<OverallStatsEntity>()
-            .HasIndex(o => o.ClubId)
-            .IsUnique();
+            .HasIndex(o => o.ClubId);
 
         modelBuilder.Entity<OverallStatsEntity>()
             .Property(o => o.Id)
