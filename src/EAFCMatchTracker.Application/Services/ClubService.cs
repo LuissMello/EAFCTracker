@@ -160,6 +160,27 @@ public class ClubService : IClubService
         };
     }
 
+    public async Task<ClubOverallStatsDto?> GetOverallForMatchAsync(long clubId, long matchId, CancellationToken ct)
+    {
+        _logger.LogInformation("ClubService.GetOverallForMatchAsync clubId={ClubId} matchId={MatchId}", clubId, matchId);
+
+        // Try exact record first (match-specific snapshot)
+        var exact = await _db.OverallStats.AsNoTracking()
+            .Where(os => os.ClubId == clubId && os.MatchId == matchId)
+            .FirstOrDefaultAsync(ct);
+
+        if (exact != null)
+            return StatsAggregator.BuildClubsOverall([exact]).FirstOrDefault();
+
+        // Fallback: legacy null-MatchId record (single historical record)
+        var fallback = await _db.OverallStats.AsNoTracking()
+            .Where(os => os.ClubId == clubId && os.MatchId == null)
+            .OrderByDescending(os => os.UpdatedAtUtc)
+            .FirstOrDefaultAsync(ct);
+
+        return fallback == null ? null : StatsAggregator.BuildClubsOverall([fallback]).FirstOrDefault();
+    }
+
     public async Task<List<ClubPlayoffAchievementDto>> GetPlayoffsAsync(long clubId, CancellationToken ct)
     {
         _logger.LogInformation("ClubService.GetPlayoffsAsync for clubId={ClubId}", clubId);

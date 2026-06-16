@@ -144,6 +144,29 @@ public class ClubsController : ControllerBase
         }
     }
 
+    [HttpGet("{clubId:long}/matches/{matchId:long}/overall")]
+    public async Task<ActionResult<ClubOverallStatsDto>> GetOverallForMatch(
+        long clubId,
+        long matchId,
+        CancellationToken ct)
+    {
+        _logger.LogInformation("GetOverallForMatch called for clubId={ClubId} matchId={MatchId}", clubId, matchId);
+        try
+        {
+            if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+            if (matchId <= 0) return BadRequest("Informe um matchId válido.");
+
+            var result = await _clubService.GetOverallForMatchAsync(clubId, matchId, ct);
+            if (result == null) return NotFound();
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetOverallForMatch for clubId={ClubId} matchId={MatchId}", clubId, matchId);
+            return StatusCode(500, "Erro interno ao buscar estatísticas gerais da partida.");
+        }
+    }
+
     [HttpGet("{clubId:long}/playoffs")]
     public async Task<ActionResult<List<ClubPlayoffAchievementDto>>> GetClubPlayoffs(long clubId, CancellationToken ct)
     {
