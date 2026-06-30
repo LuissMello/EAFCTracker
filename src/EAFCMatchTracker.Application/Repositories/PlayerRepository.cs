@@ -53,11 +53,15 @@ public class PlayerRepository : IPlayerRepository
         if (clubIds.Count == 0)
             return new Dictionary<long, int?>();
 
-        return await _db.OverallStats
+        var stats = await _db.OverallStats
             .AsNoTracking()
             .Where(os => clubIds.Contains(os.ClubId))
             .Select(os => new { os.ClubId, os.CurrentDivision })
-            .ToDictionaryAsync(x => x.ClubId, x => (int?)x.CurrentDivision, ct);
+            .ToListAsync(ct);
+
+        return stats
+            .GroupBy(x => x.ClubId)
+            .ToDictionary(g => g.Key, g => (int?)g.First().CurrentDivision);
     }
 
     public Task UpdateMatchPlayersRangeAsync(IEnumerable<MatchPlayerEntity> players)
