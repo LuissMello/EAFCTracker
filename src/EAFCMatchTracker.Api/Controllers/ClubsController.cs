@@ -296,7 +296,8 @@ public class ClubsController : ControllerBase
                     .Where(s => s.Date >= DateOnly.FromDateTime(start) && s.Date <= DateOnly.FromDateTime(end)).ToList();
                 if (chosen.Count == 0) return Ok(new List<FullMatchStatisticsByDayDto>());
                 startUtc = chosen.Min(s => s.StartedAt);
-                endExclusiveUtc = chosen.Max(s => s.EndedAt).AddTicks(1);
+                // PostgreSQL armazena timestamps em microssegundos; 1 tick (100 ns) se perde no parâmetro.
+                endExclusiveUtc = chosen.Max(s => s.EndedAt).AddTicks(10);
                 sessionDates = chosen.SelectMany(s => s.MatchIds.Select(id => (id, s.Date)))
                     .ToDictionary(x => x.id, x => x.Date);
             }
@@ -354,7 +355,8 @@ public class ClubsController : ControllerBase
                     .Where(s => s.Date >= DateOnly.FromDateTime(start) && s.Date <= DateOnly.FromDateTime(end)).ToList();
                 if (chosen.Count == 0) return Ok(new List<PlayerStatisticsByDayDto>());
                 startUtc = chosen.Min(s => s.StartedAt);
-                endExclusiveUtc = chosen.Max(s => s.EndedAt).AddTicks(1);
+                // Inclui a última partida da sessão também após a conversão para microssegundos.
+                endExclusiveUtc = chosen.Max(s => s.EndedAt).AddTicks(10);
                 sessionDates = chosen.SelectMany(s => s.MatchIds.Select(id => (id, s.Date)))
                     .ToDictionary(x => x.id, x => x.Date);
             }
