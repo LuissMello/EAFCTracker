@@ -105,5 +105,12 @@ public class ClubSessionServiceTests
             "20260928221334_GameVersionsEIndices", "20260929175400_AddClubSessions");
         Assert.Contains("CREATE TABLE \"SessionBoundaries\"", sql);
         Assert.Contains("SessionGapMinutes", sql);
+
+        var sessionQuerySql = db.MatchClubs.AsNoTracking()
+            .Where(c => c.ClubId == 355651)
+            .OrderBy(c => c.Match.Timestamp).ThenBy(c => c.MatchId)
+            .Select(c => new SessionMatch(c.MatchId, c.Match.Timestamp))
+            .ToQueryString();
+        Assert.Contains("ORDER BY", sessionQuerySql);
     }
 }

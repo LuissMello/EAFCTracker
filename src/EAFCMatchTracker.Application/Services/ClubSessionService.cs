@@ -28,8 +28,8 @@ public sealed class ClubSessionService
         var settings = await _db.TrackedClubs.AsNoTracking().FirstOrDefaultAsync(c => c.ClubId == clubId, ct);
         var matches = await _db.MatchClubs.AsNoTracking()
             .Where(c => c.ClubId == clubId)
+            .OrderBy(c => c.Match.Timestamp).ThenBy(c => c.MatchId)
             .Select(c => new SessionMatch(c.MatchId, c.Match.Timestamp))
-            .OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId)
             .ToListAsync(ct);
         var boundaries = await _db.SessionBoundaries.AsNoTracking()
             .Where(b => b.ClubId == clubId)
