@@ -2,6 +2,8 @@ using EAFCMatchTracker.Application.Interfaces.Repositories;
 using EAFCMatchTracker.Domain.Entities;
 using EAFCMatchTracker.Domain.Models;
 using EAFCMatchTracker.Infrastructure.Http;
+using EAFCMatchTracker.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
 using System.Globalization;
 using System.Text;
@@ -25,6 +27,7 @@ public class AdminController : ControllerBase
     private readonly IEAHttpClient _ea;
     private readonly IConfiguration _config;
     private readonly ILogger<AdminController> _logger;
+    private readonly EAFCContext _db;
 
     public AdminController(
         IAppSettingRepository settings,
@@ -32,7 +35,8 @@ public class AdminController : ControllerBase
         IGameVersionRepository versions,
         IEAHttpClient ea,
         IConfiguration config,
-        ILogger<AdminController> logger)
+        ILogger<AdminController> logger,
+        EAFCContext db)
     {
         _settings = settings;
         _clubs = clubs;
@@ -40,6 +44,7 @@ public class AdminController : ControllerBase
         _ea = ea;
         _config = config;
         _logger = logger;
+        _db = db;
     }
 
     // GET /api/admin/ping  (protegido; permite ao frontend validar a credencial)
@@ -223,6 +228,52 @@ public class AdminController : ControllerBase
         return Ok(ToTrackedClubResponse(updated, versions));
     }
 
+    [HttpPut("tracked-clubs/{clubId:long}/session-settings")]
+    public async Task<IActionResult> SetSessionSettings(long clubId, [FromBody] SessionSettingsRequest body, CancellationToken ct)
+    {
+        if (body.GapMinutes is < 15 or > 360)
+            return BadRequest(Invalid("O intervalo entre partidas deve estar entre 15 e 360 minutos."));
+        var timeZoneId = body.TimeZoneId?.Trim();
+        if (string.IsNullOrWhiteSpace(timeZoneId) || timeZoneId.Length > 100)
+            return BadRequest(Invalid("Informe um fuso horário IANA válido."));
+        try { TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
+        catch (TimeZoneNotFoundException) { return BadRequest(Invalid("Fuso horário desconhecido.")); }
+        catch (InvalidTimeZoneException) { return BadRequest(Invalid("Fuso horário inválido.")); }
+
+        var club = await _db.TrackedClubs.FirstOrDefaultAsync(c => c.ClubId == clubId, ct);
+        if (club is null) return NotFound(Invalid($"Clube {clubId} não encontrado.", 404));
+        club.TimeZoneId = timeZoneId;
+        club.SessionGapMinutes = body.GapMinutes;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { club.ClubId, club.TimeZoneId, club.SessionGapMinutes });
+    }
+
+    [HttpPut("tracked-clubs/{clubId:long}/session-boundaries/{matchId:long}")]
+    public async Task<IActionResult> SetSessionBoundary(long clubId, long matchId, [FromBody] SessionBoundaryRequest body, CancellationToken ct)
+    {
+        if (body.Mode is not ("auto" or "split" or "join"))
+            return BadRequest(Invalid("Use auto, split ou join."));
+        if (!await _db.MatchClubs.AnyAsync(c => c.ClubId == clubId && c.MatchId == matchId, ct))
+            return NotFound(Invalid("Partida não encontrada para este clube.", 404));
+
+        var boundary = await _db.SessionBoundaries.FindAsync([clubId, matchId], ct);
+        if (body.Mode == "auto")
+        {
+            if (boundary is not null) _db.SessionBoundaries.Remove(boundary);
+        }
+        else if (boundary is null)
+        {
+            _db.SessionBoundaries.Add(new SessionBoundaryEntity
+            {
+                ClubId = clubId, MatchId = matchId, StartNewSession = body.Mode == "split"
+            });
+        }
+        else boundary.StartNewSession = body.Mode == "split";
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { clubId, matchId, body.Mode });
+    }
+
     // DELETE /api/admin/tracked-clubs/{clubId}
     [HttpDelete("tracked-clubs/{clubId:long}")]
     public async Task<IActionResult> RemoveTrackedClub(long clubId, CancellationToken ct)
@@ -287,7 +338,7 @@ public class AdminController : ControllerBase
     {
         GameVersionEntity? v = null;
         if (c.GameVersionId.HasValue) versions.TryGetValue(c.GameVersionId.Value, out v);
-        return new { c.ClubId, c.Name, c.AddedAt, GameVersion = v?.Version, GameVersionName = v?.Name };
+        return new { c.ClubId, c.Name, c.AddedAt, c.TimeZoneId, c.SessionGapMinutes, GameVersion = v?.Version, GameVersionName = v?.Name };
     }
 
     private static ProblemDetails Invalid(string detail, int status = StatusCodes.Status400BadRequest) => new()
@@ -316,4 +367,6 @@ public class AdminController : ControllerBase
 public record UpdateSettingRequest(string Value);
 public record AddTrackedClubRequest(long ClubId, string? Name, int? GameVersion = null);
 public record SetTrackedClubGameVersionRequest(int GameVersion);
+public record SessionSettingsRequest(string TimeZoneId, int GapMinutes);
+public record SessionBoundaryRequest(string Mode);
 public record CreateGameVersionRequest(int Version, string? Name, string? StartsAt);

@@ -1,5 +1,6 @@
 using EAFCMatchTracker.Application.Dtos;
 using EAFCMatchTracker.Application.Interfaces.Services;
+using EAFCMatchTracker.Application.Services;
 using Microsoft.AspNetCore.Mvc;
 using System.Globalization;
 
@@ -11,11 +12,26 @@ public class CalendarController : ControllerBase
 {
     private readonly ICalendarService _calendarService;
     private readonly ILogger<CalendarController> _logger;
+    private readonly ClubSessionService _sessions;
 
-    public CalendarController(ICalendarService calendarService, ILogger<CalendarController> logger)
+    public CalendarController(ICalendarService calendarService, ILogger<CalendarController> logger, ClubSessionService sessions)
     {
         _calendarService = calendarService;
         _logger = logger;
+        _sessions = sessions;
+    }
+
+    // Associação de partidas à sessão do clube, para gráficos que já possuem as partidas.
+    [HttpGet("session-memberships")]
+    public async Task<IActionResult> GetSessionMemberships([FromQuery] long clubId, [FromQuery] string matchIds, CancellationToken ct)
+    {
+        if (clubId <= 0) return BadRequest("Informe um clubId válido.");
+        if (matchIds is null || matchIds.Length > 10000) return BadRequest("Lista de partidas inválida.");
+        var ids = ParseClubIds(matchIds).Take(500).ToHashSet();
+        if (ids.Count == 0) return Ok(Array.Empty<object>());
+        var sessions = await _sessions.GetForClubAsync(clubId, ct);
+        return Ok(sessions.SelectMany(s => s.MatchIds.Where(ids.Contains)
+            .Select(id => new { matchId = id, sessionId = s.Id, date = s.Date })));
     }
 
     // GET /api/Calendar?year=2025&month=9&clubId=123
@@ -25,7 +41,8 @@ public class CalendarController : ControllerBase
         [FromQuery] int year,
         [FromQuery] int month,
         [FromQuery] long? clubId = null,
-        [FromQuery] string? clubIds = null)
+        [FromQuery] string? clubIds = null,
+        [FromQuery] bool sessions = false)
     {
         _logger.LogInformation("GetMonthlyCalendar called with year={Year}, month={Month}, clubId={ClubId}, clubIds={ClubIds}", year, month, clubId, clubIds);
 
@@ -48,7 +65,8 @@ public class CalendarController : ControllerBase
                 selectedIds.Add(clubId!.Value);
             }
 
-            var result = await _calendarService.GetMonthlyCalendarAsync(year, month, selectedIds.ToHashSet(), default);
+            if (sessions && selectedIds.Count != 1) return BadRequest("A visão de sessões exige um único clube.");
+            var result = await _calendarService.GetMonthlyCalendarAsync(year, month, selectedIds.ToHashSet(), sessions, default);
             return Ok(result);
         }
         catch (Exception ex)
@@ -64,7 +82,8 @@ public class CalendarController : ControllerBase
     public async Task<ActionResult<CalendarDayDetailsDto>> GetDayDetails(
         [FromQuery] DateOnly date,
         [FromQuery] long? clubId = null,
-        [FromQuery] string? clubIds = null)
+        [FromQuery] string? clubIds = null,
+        [FromQuery] bool sessions = false)
     {
         _logger.LogInformation("GetDayDetails called with date={Date}, clubId={ClubId}, clubIds={ClubIds}", date, clubId, clubIds);
 
@@ -81,7 +100,8 @@ public class CalendarController : ControllerBase
                 selectedIds.Add(clubId!.Value);
             }
 
-            var result = await _calendarService.GetDayDetailsAsync(date, selectedIds.ToHashSet(), default);
+            if (sessions && selectedIds.Count != 1) return BadRequest("A visão de sessões exige um único clube.");
+            var result = await _calendarService.GetDayDetailsAsync(date, selectedIds.ToHashSet(), sessions, default);
             return Ok(result);
         }
         catch (Exception ex)

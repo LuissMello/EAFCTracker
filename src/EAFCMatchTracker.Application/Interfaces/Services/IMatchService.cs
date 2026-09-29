@@ -13,8 +13,8 @@ public interface IMatchService
     Task DeleteMatchAsync(long matchId, CancellationToken ct);
     Task<FullMatchStatisticsDto> GetMatchStatisticsAsync(long clubId, CancellationToken ct);
     Task<FullMatchStatisticsDto> GetMatchStatisticsLimitedAsync(long clubId, int count, int? opponentCount, CancellationToken ct);
-    Task<List<FullMatchStatisticsByDayDto>> GetMatchStatisticsByDateRangeGroupedAsync(List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, int? opponentCount, CancellationToken ct);
-    Task<List<PlayerStatisticsByDayDto>> GetPlayerMatchStatisticsByDateRangeGroupedAsync(long playerId, List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, CancellationToken ct);
+    Task<List<FullMatchStatisticsByDayDto>> GetMatchStatisticsByDateRangeGroupedAsync(List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, int? opponentCount, CancellationToken ct, IReadOnlyDictionary<long, DateOnly>? sessionDates = null);
+    Task<List<PlayerStatisticsByDayDto>> GetPlayerMatchStatisticsByDateRangeGroupedAsync(long playerId, List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, CancellationToken ct, IReadOnlyDictionary<long, DateOnly>? sessionDates = null);
     Task<PagedResult<MatchResultDto>> GetMatchResultsAsync(long clubId, DomainMatchType matchType, int? opponentCount, int page, int pageSize, int? gameVersion, string? search, string redFilter, int? opponentDivision, string sort, CancellationToken ct);
     Task<PagedResult<MatchResultDto>> GetMultiClubMatchResultsAsync(List<long> ids, DomainMatchType matchType, int? opponentCount, int page, int pageSize, int? gameVersion, string? search, string redFilter, int? opponentDivision, string sort, CancellationToken ct);
     Task DeleteMatchesByClubAsync(long clubId, CancellationToken ct);

@@ -76,6 +76,7 @@ builder.Services.AddScoped<IClubService, ClubService>();
 builder.Services.AddScoped<IMatchService, MatchService>();
 builder.Services.AddScoped<IPlayerService, PlayerService>();
 builder.Services.AddScoped<ICalendarService, CalendarService>();
+builder.Services.AddScoped<ClubSessionService>();
 builder.Services.AddScoped<ITrendsService, TrendsService>();
 builder.Services.AddScoped<IGoalAnalysisService, GoalAnalysisService>();
 builder.Services.AddScoped<IMaintenanceService, MaintenanceService>();

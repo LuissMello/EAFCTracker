@@ -18,6 +18,7 @@ public class EAFCContext : DbContext
     public DbSet<MatchGoalLinkEntity> MatchGoalLinks { get; set; }
     public DbSet<AppSettingEntity> AppSettings { get; set; }
     public DbSet<TrackedClubEntity> TrackedClubs { get; set; }
+    public DbSet<SessionBoundaryEntity> SessionBoundaries { get; set; }
     public DbSet<GameVersionEntity> GameVersions { get; set; }
 
 
@@ -248,6 +249,18 @@ public class EAFCContext : DbContext
         modelBuilder.Entity<TrackedClubEntity>()
             .Property(c => c.ClubId)
             .ValueGeneratedNever();
+
+        modelBuilder.Entity<TrackedClubEntity>()
+            .Property(c => c.TimeZoneId).HasMaxLength(100).HasDefaultValue("America/Sao_Paulo");
+        modelBuilder.Entity<TrackedClubEntity>()
+            .Property(c => c.SessionGapMinutes).HasDefaultValue(120);
+
+        modelBuilder.Entity<SessionBoundaryEntity>()
+            .HasKey(b => new { b.ClubId, b.MatchId });
+        modelBuilder.Entity<SessionBoundaryEntity>()
+            .HasOne<TrackedClubEntity>().WithMany().HasForeignKey(b => b.ClubId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<SessionBoundaryEntity>()
+            .HasOne<MatchEntity>().WithMany().HasForeignKey(b => b.MatchId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<TrackedClubEntity>()
             .HasData(

@@ -12,14 +12,16 @@ public class CalendarService : ICalendarService
 {
     private readonly EAFCContext _db;
     private readonly ILogger<CalendarService> _logger;
+    private readonly ClubSessionService _sessionService;
 
-    public CalendarService(EAFCContext db, ILogger<CalendarService> logger)
+    public CalendarService(EAFCContext db, ILogger<CalendarService> logger, ClubSessionService sessionService)
     {
         _db = db;
         _logger = logger;
+        _sessionService = sessionService;
     }
 
-    public async Task<CalendarMonthDto> GetMonthlyCalendarAsync(int year, int month, HashSet<long> selected, CancellationToken ct)
+    public async Task<CalendarMonthDto> GetMonthlyCalendarAsync(int year, int month, HashSet<long> selected, bool sessions, CancellationToken ct)
     {
         _logger.LogInformation("CalendarService.GetMonthlyCalendarAsync year={Year} month={Month}", year, month);
 
@@ -28,15 +30,25 @@ public class CalendarService : ICalendarService
         var startDate = BrazilTime.StartOfLocalDayUtc(firstDay);
         var endDate = BrazilTime.StartOfLocalDayUtc(firstDay.AddMonths(1));
 
-        var monthlyMatches = await _db.Matches
+        var sessionList = sessions
+            ? (await _sessionService.GetForClubAsync(selected.Single(), ct))
+                .Where(s => s.Date.Year == year && s.Date.Month == month).ToList()
+            : new List<ClubSession>();
+        var sessionMatchIds = sessionList.SelectMany(s => s.MatchIds).ToHashSet();
+        var monthlyQuery = _db.Matches
             .AsNoTracking()
-            .Where(m => m.Timestamp >= startDate && m.Timestamp < endDate)
-            .Where(m => m.Clubs.Any(c => selected.Contains(c.ClubId)))
+            .Where(m => m.Clubs.Any(c => selected.Contains(c.ClubId)));
+        monthlyQuery = sessions
+            ? monthlyQuery.Where(m => sessionMatchIds.Contains(m.MatchId))
+            : monthlyQuery.Where(m => m.Timestamp >= startDate && m.Timestamp < endDate);
+        var monthlyMatches = await monthlyQuery
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .ToListAsync(ct);
 
+        var sessionDates = sessionList.SelectMany(s => s.MatchIds.Select(id => new { id, s.Date }))
+            .ToDictionary(x => x.id, x => x.Date);
         var dailySummaries = monthlyMatches
-            .GroupBy(m => BrazilTime.ToLocalDate(m.Timestamp))
+            .GroupBy(m => sessions ? sessionDates[m.MatchId] : BrazilTime.ToLocalDate(m.Timestamp))
             .Select(group =>
             {
                 try { return BuildDaySummary(group, selected); }
@@ -58,7 +70,7 @@ public class CalendarService : ICalendarService
         };
     }
 
-    public async Task<CalendarDayDetailsDto> GetDayDetailsAsync(DateOnly date, HashSet<long> selected, CancellationToken ct)
+    public async Task<CalendarDayDetailsDto> GetDayDetailsAsync(DateOnly date, HashSet<long> selected, bool sessions, CancellationToken ct)
     {
         _logger.LogInformation("CalendarService.GetDayDetailsAsync date={Date}", date);
 
@@ -66,10 +78,17 @@ public class CalendarService : ICalendarService
         var dayStart = BrazilTime.StartOfLocalDayUtc(date);
         var dayEnd = BrazilTime.StartOfLocalDayUtc(date.AddDays(1));
 
-        var matchesOfDay = await _db.Matches
+        var sessionList = sessions
+            ? (await _sessionService.GetForClubAsync(selected.Single(), ct)).Where(s => s.Date == date).ToList()
+            : new List<ClubSession>();
+        var sessionMatchIds = sessionList.SelectMany(s => s.MatchIds).ToHashSet();
+        var dayQuery = _db.Matches
             .AsNoTracking()
-            .Where(m => m.Timestamp >= dayStart && m.Timestamp < dayEnd)
-            .Where(m => m.Clubs.Any(c => selected.Contains(c.ClubId)))
+            .Where(m => m.Clubs.Any(c => selected.Contains(c.ClubId)));
+        dayQuery = sessions
+            ? dayQuery.Where(m => sessionMatchIds.Contains(m.MatchId))
+            : dayQuery.Where(m => m.Timestamp >= dayStart && m.Timestamp < dayEnd);
+        var matchesOfDay = await dayQuery
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId)
@@ -88,7 +107,15 @@ public class CalendarService : ICalendarService
         var details = new CalendarDayDetailsDto
         {
             Date = date,
-            Matches = list
+            TimeZoneId = sessions
+                ? (await _db.TrackedClubs.AsNoTracking().Where(c => c.ClubId == selected.Single())
+                    .Select(c => c.TimeZoneId).FirstOrDefaultAsync(ct) ?? "America/Sao_Paulo")
+                : "America/Sao_Paulo",
+            Matches = list,
+            Sessions = sessionList.Select(s => new CalendarSessionDto
+            {
+                Id = s.Id, StartedAt = s.StartedAt, EndedAt = s.EndedAt, MatchIds = s.MatchIds
+            }).ToList()
         };
         details.TotalMatches = list.Count;
         details.Wins = list.Count(m => m.ResultForClub == "W");

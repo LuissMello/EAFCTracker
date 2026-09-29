@@ -165,7 +165,7 @@ public class MatchService : IMatchService
     }
 
     public async Task<List<FullMatchStatisticsByDayDto>> GetMatchStatisticsByDateRangeGroupedAsync(
-        List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, int? opponentCount, CancellationToken ct)
+        List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, int? opponentCount, CancellationToken ct, IReadOnlyDictionary<long, DateOnly>? sessionDates = null)
     {
         _logger.LogInformation("MatchService.GetMatchStatisticsByDateRangeGroupedAsync ids={Ids}", string.Join(",", ids));
 
@@ -184,9 +184,13 @@ public class MatchService : IMatchService
         var matches = await q.OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId).ToListAsync(ct);
         if (matches.Count == 0) return new List<FullMatchStatisticsByDayDto>();
 
-        // Dia = dia do calendário de Brasília (os limites startUtc/endExclusiveUtc já vêm em horário de Brasília)
+        if (sessionDates is not null)
+            matches = matches.Where(m => sessionDates.ContainsKey(m.MatchId)).ToList();
+
         return matches
-            .GroupBy(m => BrazilTime.ToLocal(m.Timestamp).Date)
+            .GroupBy(m => sessionDates is null
+                ? BrazilTime.ToLocal(m.Timestamp).Date
+                : sessionDates[m.MatchId].ToDateTime(TimeOnly.MinValue))
             .Select(g =>
             {
                 var dayMatches = g.ToList();
@@ -277,15 +281,19 @@ public class MatchService : IMatchService
     }
 
     public async Task<List<PlayerStatisticsByDayDto>> GetPlayerMatchStatisticsByDateRangeGroupedAsync(
-        long playerId, List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, CancellationToken ct)
+        long playerId, List<long> ids, DateTime startUtc, DateTime endExclusiveUtc, CancellationToken ct, IReadOnlyDictionary<long, DateOnly>? sessionDates = null)
     {
         _logger.LogInformation("MatchService.GetPlayerMatchStatisticsByDateRangeGroupedAsync playerId={PlayerId}", playerId);
 
         var matches = await _matchRepository.GetMatchesForPlayerInClubsInDateRangeAsync(playerId, ids, startUtc, endExclusiveUtc, ct);
+        if (sessionDates is not null)
+            matches = matches.Where(m => sessionDates.ContainsKey(m.MatchId)).ToList();
         if (matches.Count == 0) return new List<PlayerStatisticsByDayDto>();
 
         return matches
-            .GroupBy(m => BrazilTime.ToLocal(m.Timestamp).Date)
+            .GroupBy(m => sessionDates is null
+                ? BrazilTime.ToLocal(m.Timestamp).Date
+                : sessionDates[m.MatchId].ToDateTime(TimeOnly.MinValue))
             .Select(g =>
             {
                 var dayMatches = g.ToList();

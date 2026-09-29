@@ -694,6 +694,16 @@ namespace EAFCMatchTracker.Migrations
                         });
                 });
 
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.SessionBoundaryEntity", b =>
+                {
+                    b.Property<long>("ClubId").HasColumnType("bigint");
+                    b.Property<long>("MatchId").HasColumnType("bigint");
+                    b.Property<bool>("StartNewSession").HasColumnType("boolean");
+                    b.HasKey("ClubId", "MatchId");
+                    b.HasIndex("MatchId");
+                    b.ToTable("SessionBoundaries");
+                });
+
             modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.TrackedClubEntity", b =>
                 {
                     b.Property<long>("ClubId")
@@ -708,6 +718,16 @@ namespace EAFCMatchTracker.Migrations
                     b.Property<string>("Name")
                         .HasColumnType("text");
 
+                    b.Property<int>("SessionGapMinutes")
+                        .HasColumnType("integer")
+                        .HasDefaultValue(120);
+
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasDefaultValue("America/Sao_Paulo");
+
                     b.HasKey("ClubId");
 
                     b.HasIndex("GameVersionId");
@@ -718,22 +738,30 @@ namespace EAFCMatchTracker.Migrations
                         new
                         {
                             ClubId = 355651L,
-                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            SessionGapMinutes = 120,
+                            TimeZoneId = "America/Sao_Paulo"
                         },
                         new
                         {
                             ClubId = 352016L,
-                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            SessionGapMinutes = 120,
+                            TimeZoneId = "America/Sao_Paulo"
                         },
                         new
                         {
                             ClubId = 349613L,
-                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            SessionGapMinutes = 120,
+                            TimeZoneId = "America/Sao_Paulo"
                         },
                         new
                         {
                             ClubId = 312721L,
-                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            SessionGapMinutes = 120,
+                            TimeZoneId = "America/Sao_Paulo"
                         });
                 });
 
@@ -945,6 +973,14 @@ namespace EAFCMatchTracker.Migrations
                         .WithMany()
                         .HasForeignKey("GameVersionId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.SessionBoundaryEntity", b =>
+                {
+                    b.HasOne("EAFCMatchTracker.Domain.Entities.TrackedClubEntity", null)
+                        .WithMany().HasForeignKey("ClubId").OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.HasOne("EAFCMatchTracker.Domain.Entities.MatchEntity", null)
+                        .WithMany().HasForeignKey("MatchId").OnDelete(DeleteBehavior.Cascade).IsRequired();
                 });
 
             modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.TrackedClubEntity", b =>

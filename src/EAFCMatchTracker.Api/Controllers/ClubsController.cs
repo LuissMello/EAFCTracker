@@ -1,6 +1,7 @@
 using EAFCMatchTracker.Application.Dtos;
 using EAFCMatchTracker.Application.Interfaces.Services;
 using EAFCMatchTracker.Application.Time;
+using EAFCMatchTracker.Application.Services;
 using EAFCMatchTracker.Domain.Entities;
 using Microsoft.AspNetCore.Mvc;
 using DomainMatchType = EAFCMatchTracker.Domain.Entities.MatchType;
@@ -23,19 +24,22 @@ public class ClubsController : ControllerBase
     private readonly IPlayerService _playerService;
     private readonly IGoalAnalysisService _goalAnalysisService;
     private readonly ILogger<ClubsController> _logger;
+    private readonly ClubSessionService _sessions;
 
     public ClubsController(
         IClubService clubService,
         IMatchService matchService,
         IPlayerService playerService,
         IGoalAnalysisService goalAnalysisService,
-        ILogger<ClubsController> logger)
+        ILogger<ClubsController> logger,
+        ClubSessionService sessions)
     {
         _clubService = clubService;
         _matchService = matchService;
         _playerService = playerService;
         _goalAnalysisService = goalAnalysisService;
         _logger = logger;
+        _sessions = sessions;
     }
 
     [HttpGet]
@@ -247,6 +251,7 @@ public class ClubsController : ControllerBase
         [FromQuery] DateTime start,
         [FromQuery] DateTime end,
         [FromQuery] int? opponentCount,
+        [FromQuery] bool sessions = false,
         CancellationToken ct = default)
     {
         _logger.LogInformation(
@@ -274,6 +279,8 @@ public class ClubsController : ControllerBase
                 return BadRequest("Nenhum clubId válido em 'clubIds'.");
             if (ids.Count > MaxClubIds)
                 return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
+            if (sessions && ids.Count != 1)
+                return BadRequest("A visão de sessões exige um único clube.");
 
             bool applyOpponentFilter = opponentCount.HasValue && ids.Count == 1;
             if (applyOpponentFilter)
@@ -282,9 +289,20 @@ public class ClubsController : ControllerBase
             // start/end são datas locais (YYYY-MM-DD, horário de Brasília) -> limites UTC
             var startUtc = BrazilTime.StartOfLocalDayUtc(start.Date);
             var endExclusiveUtc = BrazilTime.StartOfLocalDayUtc(end.Date.AddDays(1));
+            IReadOnlyDictionary<long, DateOnly>? sessionDates = null;
+            if (sessions)
+            {
+                var chosen = (await _sessions.GetForClubAsync(ids[0], ct))
+                    .Where(s => s.Date >= DateOnly.FromDateTime(start) && s.Date <= DateOnly.FromDateTime(end)).ToList();
+                if (chosen.Count == 0) return Ok(new List<FullMatchStatisticsByDayDto>());
+                startUtc = chosen.Min(s => s.StartedAt);
+                endExclusiveUtc = chosen.Max(s => s.EndedAt).AddTicks(1);
+                sessionDates = chosen.SelectMany(s => s.MatchIds.Select(id => (id, s.Date)))
+                    .ToDictionary(x => x.id, x => x.Date);
+            }
 
             var result = await _matchService.GetMatchStatisticsByDateRangeGroupedAsync(
-                ids, startUtc, endExclusiveUtc, applyOpponentFilter ? opponentCount : null, ct);
+                ids, startUtc, endExclusiveUtc, applyOpponentFilter ? opponentCount : null, ct, sessionDates);
 
             return Ok(result);
         }
@@ -301,6 +319,7 @@ public class ClubsController : ControllerBase
         [FromQuery] string clubIds,
         [FromQuery] DateTime start,
         [FromQuery] DateTime end,
+        [FromQuery] bool sessions = false,
         CancellationToken ct = default)
     {
         _logger.LogInformation(
@@ -324,11 +343,23 @@ public class ClubsController : ControllerBase
 
             if (ids.Count == 0) return BadRequest("Nenhum clubId válido em 'clubIds'.");
             if (ids.Count > MaxClubIds) return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
+            if (sessions && ids.Count != 1) return BadRequest("A visão de sessões exige um único clube.");
 
             var startUtc = BrazilTime.StartOfLocalDayUtc(start.Date);
             var endExclusiveUtc = BrazilTime.StartOfLocalDayUtc(end.Date.AddDays(1));
+            IReadOnlyDictionary<long, DateOnly>? sessionDates = null;
+            if (sessions)
+            {
+                var chosen = (await _sessions.GetForClubAsync(ids[0], ct))
+                    .Where(s => s.Date >= DateOnly.FromDateTime(start) && s.Date <= DateOnly.FromDateTime(end)).ToList();
+                if (chosen.Count == 0) return Ok(new List<PlayerStatisticsByDayDto>());
+                startUtc = chosen.Min(s => s.StartedAt);
+                endExclusiveUtc = chosen.Max(s => s.EndedAt).AddTicks(1);
+                sessionDates = chosen.SelectMany(s => s.MatchIds.Select(id => (id, s.Date)))
+                    .ToDictionary(x => x.id, x => x.Date);
+            }
 
-            var result = await _matchService.GetPlayerMatchStatisticsByDateRangeGroupedAsync(playerId, ids, startUtc, endExclusiveUtc, ct);
+            var result = await _matchService.GetPlayerMatchStatisticsByDateRangeGroupedAsync(playerId, ids, startUtc, endExclusiveUtc, ct, sessionDates);
             return Ok(result);
         }
         catch (Exception ex)
