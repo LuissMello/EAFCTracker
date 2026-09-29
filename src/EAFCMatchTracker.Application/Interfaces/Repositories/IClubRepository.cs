@@ -10,6 +10,9 @@ public interface IClubRepository
     Task<OverallStatsEntity?> GetOverallStatsByClubIdAsync(long clubId, CancellationToken ct);
     Task<List<OverallStatsEntity>> GetAllOverallStatsByClubIdAsync(long clubId, CancellationToken ct);
     Task<List<OverallStatsEntity>> GetOverallStatsByClubIdsAsync(List<long> ids, CancellationToken ct);
+
+    /// <summary>Última linha de OverallStats (tracked) de cada clube informado, numa única query.</summary>
+    Task<Dictionary<long, OverallStatsEntity>> GetLatestOverallStatsByClubIdsAsync(List<long> ids, CancellationToken ct);
     Task<List<PlayoffAchievementEntity>> GetPlayoffAchievementsByClubIdAsync(long clubId, CancellationToken ct);
     Task<List<long>> GetAllDistinctClubIdsAsync(CancellationToken ct);
     Task<string?> GetLatestClubNameAsync(long clubId, CancellationToken ct);

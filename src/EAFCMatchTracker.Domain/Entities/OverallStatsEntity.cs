@@ -23,5 +23,8 @@ public class OverallStatsEntity
     public string? LeagueAppearances { get; set; }
     public int? CurrentDivision { get; set; }
 
+    /// <summary>Edição do jogo (FK GameVersions).</summary>
+    public int? GameVersionId { get; set; }
+
     public DateTime UpdatedAtUtc { get; set; }
 }

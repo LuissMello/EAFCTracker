@@ -1,4 +1,5 @@
 using EAFCMatchTracker.Application.Dtos;
+using EAFCMatchTracker.Application.Exceptions;
 using EAFCMatchTracker.Application.Interfaces.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -153,11 +154,21 @@ public class MatchesController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
+            // Mensagem escrita pelo próprio serviço ("Match {id} not found."): segura para devolver
+            _logger.LogWarning(ex, "Match not found while registering goals: {MatchId}", matchId);
+            return BadRequest(ex.Message);
+        }
+        catch (DomainValidationException ex)
+        {
+            // Erro de validação esperado (ids fora da partida, limites de gols/assistências...) com mensagem específica
+            _logger.LogWarning(ex, "Invalid goals payload for match: {MatchId}", matchId);
             return BadRequest(ex.Message);
         }
         catch (ArgumentException ex)
         {
-            return BadRequest(ex.Message);
+            // ArgumentException inesperada (não é validação de domínio): mantém mensagem genérica
+            _logger.LogWarning(ex, "Invalid goals payload for match: {MatchId}", matchId);
+            return BadRequest("Invalid goals payload.");
         }
         catch (Exception ex)
         {

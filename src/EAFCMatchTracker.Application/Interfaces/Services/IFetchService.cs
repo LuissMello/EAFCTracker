@@ -3,7 +3,8 @@ namespace EAFCMatchTracker.Application.Interfaces.Services;
 public interface IFetchService
 {
     /// <summary>
-    /// Executa a busca e armazenamento de partidas para todos os clubes configurados.
+    /// Executa (ou pula, se já houver ciclo em andamento / muito recente) a busca e armazenamento
+    /// de partidas para todos os clubes configurados.
     /// Retorna um objeto com a hora de execução e erros eventuais.
     /// </summary>
     Task<FetchRunResult> RunAsync(CancellationToken ct);
@@ -14,4 +15,8 @@ public interface IFetchService
     Task<DateTimeOffset?> GetLastRunAsync(CancellationToken ct);
 }
 
-public record FetchRunResult(DateTimeOffset RanAtUtc, bool HadErrors, IReadOnlyList<string> Errors);
+public record FetchRunResult(
+    DateTimeOffset RanAtUtc,
+    bool HadErrors,
+    IReadOnlyList<string> Errors,
+    bool Skipped = false);

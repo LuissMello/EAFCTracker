@@ -1,8 +1,11 @@
+using EAFCMatchTracker.Api.Infrastructure;
+using EAFCMatchTracker.Api.Security;
 using EAFCMatchTracker.Application.Interfaces;
 using EAFCMatchTracker.Application.Interfaces.Repositories;
 using EAFCMatchTracker.Application.Interfaces.Services;
 using EAFCMatchTracker.Application.Repositories;
 using EAFCMatchTracker.Application.Services;
+using EAFCMatchTracker.Domain.Entities;
 using EAFCMatchTracker.Domain.Settings;
 using EAFCMatchTracker.Infrastructure.Data;
 using EAFCMatchTracker.Infrastructure.Http;
@@ -17,7 +20,13 @@ using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.WebHost.UseUrls("http://0.0.0.0:8080");
+// Porta padrão 8080 (Fly.io) — só aplica se ASPNETCORE_URLS / --urls não estiver definido
+if (string.IsNullOrWhiteSpace(builder.Configuration["urls"]))
+{
+    builder.WebHost.UseUrls("http://0.0.0.0:8080");
+}
+
+var isDevelopment = builder.Environment.IsDevelopment();
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -29,7 +38,27 @@ builder.Services.AddControllers()
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddProblemDetails();
+builder.Services.AddMemoryCache();
+
+// Autenticação do administrador: login (senha = Auth:ApiKey) -> token assinado de curta duração (Bearer).
+// X-Api-Key continua aceito para scripts/curl. Ver ApiKeyMiddleware e AuthController.
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<IAdminTokenService, AdminTokenService>();
+builder.Services.AddSingleton<ILoginAttemptTracker, LoginAttemptTracker>();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+
+// Orquestração de busca (single-flight) e modo ao vivo
+builder.Services.AddSingleton<ILiveModeService, LiveModeService>();
+builder.Services.AddSingleton<IFetchCoordinator, FetchCoordinator>();
 builder.Services.AddHostedService<ClubMatchBackgroundService>();
+
+// HttpClient simples para keep-alive (NÃO é o cliente da EA)
+builder.Services.AddHttpClient(ClubMatchBackgroundService.KeepAliveHttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(15);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("EAFCMatchTracker-KeepAlive/1.0");
+});
 builder.Services.AddScoped<IClubMatchService, ClubMatchService>();
 
 // Repositories
@@ -38,6 +67,9 @@ builder.Services.AddScoped<IMatchRepository, MatchRepository>();
 builder.Services.AddScoped<IPlayerRepository, PlayerRepository>();
 builder.Services.AddScoped<IGoalRepository, GoalRepository>();
 builder.Services.AddScoped<IFetchRepository, FetchRepository>();
+builder.Services.AddScoped<IAppSettingRepository, AppSettingRepository>();
+builder.Services.AddScoped<ITrackedClubRepository, TrackedClubRepository>();
+builder.Services.AddScoped<IGameVersionRepository, GameVersionRepository>();
 
 // Services
 builder.Services.AddScoped<IClubService, ClubService>();
@@ -58,25 +90,42 @@ builder.Services.AddHttpClient<IEAHttpClient, EAHttpClient>()
         client.DefaultRequestHeaders.UserAgent.ParseAdd("EAFCMatchTracker/1.0");
     })
     .ConfigurePrimaryHttpMessageHandler(() =>
-        new HttpClientHandler
+    {
+        var handler = new HttpClientHandler
         {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-        });
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+        };
+
+        // Validação de certificado relaxada SOMENTE em Development
+        if (isDevelopment)
+        {
+            handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        }
+
+        return handler;
+    });
 
 builder.Services.Configure<EAFCSettings>(builder.Configuration.GetSection("EAFCSettings"));
 
-Console.WriteLine("ConnectionString:");
-Console.WriteLine(builder.Configuration.GetConnectionString("Default") ?? "NULO ou não encontrada");
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?.Where(o => !string.IsNullOrWhiteSpace(o))
+    .Select(o => o.Trim().TrimEnd('/'))
+    .ToArray();
+
+if (allowedOrigins is null || allowedOrigins.Length == 0)
+{
+    allowedOrigins = new[] { "https://luissmello.github.io", "http://localhost:3000" };
+}
 
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp",
         policy =>
         {
-            policy.AllowAnyOrigin()
-                  .AllowAnyHeader()
-                  .AllowAnyMethod();
+            policy.WithOrigins(allowedOrigins)
+                  .AllowAnyHeader()   // inclui Authorization e X-Api-Key (o preflight ecoa os headers pedidos)
+                  .AllowAnyMethod()
+                  .WithExposedHeaders("Retry-After", "WWW-Authenticate"); // legíveis pelo frontend (429 / 401)
         });
 });
 
@@ -118,12 +167,40 @@ builder.Services.AddDbContext<EAFCContext>(options =>
             npgsqlOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
         });
 
-        options.EnableSensitiveDataLogging();
-        options.LogTo(Console.WriteLine, LogLevel.Information);
+        if (isDevelopment)
+        {
+            options.EnableSensitiveDataLogging();
+            options.LogTo(Console.WriteLine, LogLevel.Information);
+        }
     }
 });
 
+var healthChecks = builder.Services.AddHealthChecks();
+if (!useInMemory)
+{
+    healthChecks.AddDbContextCheck<EAFCContext>("database");
+}
+
 var app = builder.Build();
+
+app.UseExceptionHandler();
+
+var adminAuth = app.Services.GetRequiredService<IAdminTokenService>();
+if (!adminAuth.IsConfigured)
+{
+    if (isDevelopment)
+    {
+        app.Logger.LogWarning(
+            "Auth:ApiKey (env Auth__ApiKey) não configurada em Development: rotas administrativas e de escrita " +
+            "estão ABERTAS (sem login). Defina a chave para testar o fluxo real de autenticação.");
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "Auth:ApiKey (env Auth__ApiKey) NÃO está configurada. Login indisponível (503) e todas as rotas " +
+            "protegidas (escrita em /api/* e tudo em /api/admin e /api/maintenance) responderão 401 até que seja definida.");
+    }
+}
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.GetCultureInfo("pt-BR");
 CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.GetCultureInfo("pt-BR");
@@ -138,24 +215,16 @@ app.Use(async (context, next) =>
     {
         await next();
     }
-    catch (CultureNotFoundException ex)
+    catch (CultureNotFoundException)
     {
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsJsonAsync(new
         {
             error = "Invalid culture",
-            message = ex.Message
+            message = "The requested culture is not supported."
         });
     }
 });
-
-AppDomain.CurrentDomain.FirstChanceException += (sender, eventArgs) =>
-{
-    if (eventArgs.Exception is CultureNotFoundException cex)
-    {
-        Console.WriteLine($"[Culture Guard] CultureNotFoundException capturada: {cex.Message}");
-    }
-};
 
 if (!useInMemory)
 {
@@ -170,15 +239,56 @@ if (!useInMemory)
     }
 }
 
-app.UseSwagger();
-app.UseSwaggerUI();
+if (useInMemory)
+{
+    // Somente para desenvolvimento/testes: cria o esquema em memória e aplica os dados semeados (HasData:
+    // edições do jogo, clubes rastreados, configurações). Sem isto o banco em memória nasce vazio.
+    using var scope = app.Services.CreateScope();
+    scope.ServiceProvider.GetRequiredService<EAFCContext>().Database.EnsureCreated();
+}
+
+await SeedDefaultSettingsAsync(app.Services);
+
+if (isDevelopment)
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 
 app.UseCors("AllowReactApp");
 
+app.UseMiddleware<ApiKeyMiddleware>();
+
 app.UseAuthorization();
 app.MapControllers();
+app.MapHealthChecks("/health");
 
 app.Run();
+
+async Task SeedDefaultSettingsAsync(IServiceProvider services)
+{
+    var logger = services.GetRequiredService<ILogger<Program>>();
+    try
+    {
+        using var scope = services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<EAFCContext>();
+
+        var existing = (await db.AppSettings.AsNoTracking().Select(s => s.Key).ToListAsync()).ToHashSet();
+        var added = false;
+        foreach (var def in AppSettingEntity.Definitions.All)
+        {
+            if (existing.Contains(def.Key)) continue;
+            db.AppSettings.Add(new AppSettingEntity { Key = def.Key, Value = def.Default.ToString(CultureInfo.InvariantCulture) });
+            added = true;
+        }
+
+        if (added) await db.SaveChangesAsync();
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(ex, "Não foi possível garantir as configurações padrão no banco.");
+    }
+}
 
 async Task WaitForDatabaseAsync(IServiceProvider services)
 {

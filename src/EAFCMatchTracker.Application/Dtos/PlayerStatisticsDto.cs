@@ -24,6 +24,7 @@ public class PlayerStatisticsDto
     public int TotalCleanSheets { get; set; }
     public int TotalRedCards { get; set; }
     public int TotalSaves { get; set; }
+    public bool HasGoalkeeperAppearance { get; set; }
     public int TotalMom { get; set; }
 
     public double AvgRating { get; set; }

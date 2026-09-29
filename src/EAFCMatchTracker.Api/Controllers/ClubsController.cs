@@ -1,5 +1,6 @@
 using EAFCMatchTracker.Application.Dtos;
 using EAFCMatchTracker.Application.Interfaces.Services;
+using EAFCMatchTracker.Application.Time;
 using EAFCMatchTracker.Domain.Entities;
 using Microsoft.AspNetCore.Mvc;
 using DomainMatchType = EAFCMatchTracker.Domain.Entities.MatchType;
@@ -12,6 +13,10 @@ public class ClubsController : ControllerBase
 {
     private const int MinOpponentPlayers = 2;
     private const int MaxOpponentPlayers = 11;
+
+    // Limites para entradas sem teto (evitam consultas/respostas gigantes)
+    private const int MaxMatchCount = 1000;
+    private const int MaxClubIds = 50;
 
     private readonly IClubService _clubService;
     private readonly IMatchService _matchService;
@@ -34,12 +39,14 @@ public class ClubsController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<ClubListItemDto>>> GetAll(CancellationToken ct)
+    public async Task<ActionResult<IEnumerable<ClubListItemDto>>> GetAll(
+        [FromQuery] int? gameVersion = null,
+        CancellationToken ct = default)
     {
-        _logger.LogInformation("GetAll called");
+        _logger.LogInformation("GetAll called (gameVersion={GameVersion})", gameVersion);
         try
         {
-            var clubs = await _clubService.GetAllAsync(ct);
+            var clubs = await _clubService.GetAllAsync(gameVersion, ct);
             return Ok(clubs);
         }
         catch (Exception ex)
@@ -60,6 +67,7 @@ public class ClubsController : ControllerBase
         {
             if (clubId <= 0) return BadRequest("Informe um clubId válido.");
             if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
+            count = Math.Min(count, MaxMatchCount);
 
             var result = await _playerService.GetClubPlayersAttributesAsync(clubId, count, ct);
             return Ok(result);
@@ -83,6 +91,7 @@ public class ClubsController : ControllerBase
         {
             if (clubId <= 0) return BadRequest("Informe um clubId válido.");
             if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
+            count = Math.Min(count, MaxMatchCount);
 
             var result = await _playerService.GetClubPlayersAggregateAsync(clubId, count, opponentCount, ct);
             return Ok(result);
@@ -215,14 +224,12 @@ public class ClubsController : ControllerBase
         {
             if (clubId <= 0) return BadRequest("Informe um clubId válido.");
             if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
+            count = Math.Min(count, MaxMatchCount);
 
+            // Valores fora de 2..11 são ajustados (clamp) — comportamento histórico que o frontend usa
             opponentCount = ReadOppAliasOrNull(Request, opponentCount);
             if (opponentCount.HasValue)
-            {
                 opponentCount = ClampOpp(opponentCount.Value);
-                if (opponentCount is < MinOpponentPlayers or > MaxOpponentPlayers)
-                    return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
-            }
 
             var result = await _matchService.GetMatchStatisticsLimitedAsync(clubId, count, opponentCount, ct);
             return Ok(result);
@@ -265,17 +272,16 @@ public class ClubsController : ControllerBase
 
             if (ids.Count == 0)
                 return BadRequest("Nenhum clubId válido em 'clubIds'.");
+            if (ids.Count > MaxClubIds)
+                return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
 
             bool applyOpponentFilter = opponentCount.HasValue && ids.Count == 1;
             if (applyOpponentFilter)
-            {
                 opponentCount = ClampOpp(opponentCount!.Value);
-                if (opponentCount is < MinOpponentPlayers or > MaxOpponentPlayers)
-                    return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
-            }
 
-            var startUtc = DateTime.SpecifyKind(start.Date, DateTimeKind.Utc);
-            var endExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
+            // start/end são datas locais (YYYY-MM-DD, horário de Brasília) -> limites UTC
+            var startUtc = BrazilTime.StartOfLocalDayUtc(start.Date);
+            var endExclusiveUtc = BrazilTime.StartOfLocalDayUtc(end.Date.AddDays(1));
 
             var result = await _matchService.GetMatchStatisticsByDateRangeGroupedAsync(
                 ids, startUtc, endExclusiveUtc, applyOpponentFilter ? opponentCount : null, ct);
@@ -317,9 +323,10 @@ public class ClubsController : ControllerBase
                 .ToList();
 
             if (ids.Count == 0) return BadRequest("Nenhum clubId válido em 'clubIds'.");
+            if (ids.Count > MaxClubIds) return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
 
-            var startUtc = DateTime.SpecifyKind(start.Date, DateTimeKind.Utc);
-            var endExclusiveUtc = DateTime.SpecifyKind(end.Date.AddDays(1), DateTimeKind.Utc);
+            var startUtc = BrazilTime.StartOfLocalDayUtc(start.Date);
+            var endExclusiveUtc = BrazilTime.StartOfLocalDayUtc(end.Date.AddDays(1));
 
             var result = await _matchService.GetPlayerMatchStatisticsByDateRangeGroupedAsync(playerId, ids, startUtc, endExclusiveUtc, ct);
             return Ok(result);
@@ -338,16 +345,23 @@ public class ClubsController : ControllerBase
         [FromQuery] int? opponentCount = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 50,
+        [FromQuery] int? gameVersion = null,
+        [FromQuery] string? search = null,
+        [FromQuery] string redFilter = "all",
+        [FromQuery] int? opponentDivision = null,
+        [FromQuery] string sort = "recent",
         CancellationToken ct = default)
     {
-        _logger.LogInformation("GetMultiClubMatchResults called. ClubIds={ClubIds}, matchType={MatchType}, page={Page}, pageSize={PageSize}",
-            string.Join(",", clubIds), matchType, page, pageSize);
+        _logger.LogInformation("GetMultiClubMatchResults called. ClubIds={ClubIds}, matchType={MatchType}, page={Page}, pageSize={PageSize}, gameVersion={GameVersion}",
+            string.Join(",", clubIds ?? Array.Empty<long>()), matchType, page, pageSize, gameVersion);
         try
         {
             if (clubIds == null || clubIds.Length == 0)
                 return BadRequest("Informe ao menos um clubId.");
 
             var ids = clubIds.Distinct().ToList();
+            if (ids.Count > MaxClubIds)
+                return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
 
             if (page < 1) page = 1;
             const int MaxPageSize = 200;
@@ -356,13 +370,10 @@ public class ClubsController : ControllerBase
 
             opponentCount = ReadOppAliasOrNull(Request, opponentCount);
             if (opponentCount.HasValue)
-            {
                 opponentCount = ClampOpp(opponentCount.Value);
-                if (opponentCount < MinOpponentPlayers || opponentCount > MaxOpponentPlayers)
-                    return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
-            }
 
-            var result = await _matchService.GetMultiClubMatchResultsAsync(ids, matchType, opponentCount, page, pageSize, ct);
+            if (!ValidResultFilters(redFilter, opponentDivision, sort)) return BadRequest("Filtros de resultados inválidos.");
+            var result = await _matchService.GetMultiClubMatchResultsAsync(ids, matchType, opponentCount, page, pageSize, gameVersion, search, redFilter, opponentDivision, sort, ct);
             return Ok(result);
         }
         catch (Exception ex)
@@ -379,10 +390,15 @@ public class ClubsController : ControllerBase
         [FromQuery] int? opponentCount = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 50,
+        [FromQuery] int? gameVersion = null,
+        [FromQuery] string? search = null,
+        [FromQuery] string redFilter = "all",
+        [FromQuery] int? opponentDivision = null,
+        [FromQuery] string sort = "recent",
         CancellationToken ct = default)
     {
-        _logger.LogInformation("GetMatchResults called for clubId={ClubId}, matchType={MatchType}, opponentCount={OpponentCount}, page={Page}, pageSize={PageSize}",
-            clubId, matchType, opponentCount, page, pageSize);
+        _logger.LogInformation("GetMatchResults called for clubId={ClubId}, matchType={MatchType}, opponentCount={OpponentCount}, page={Page}, pageSize={PageSize}, gameVersion={GameVersion}",
+            clubId, matchType, opponentCount, page, pageSize, gameVersion);
         try
         {
             if (clubId <= 0) return BadRequest("Informe um clubId válido.");
@@ -394,13 +410,10 @@ public class ClubsController : ControllerBase
 
             opponentCount = ReadOppAliasOrNull(Request, opponentCount);
             if (opponentCount.HasValue)
-            {
                 opponentCount = ClampOpp(opponentCount.Value);
-                if (opponentCount < MinOpponentPlayers || opponentCount > MaxOpponentPlayers)
-                    return BadRequest($"opponentCount deve estar entre {MinOpponentPlayers} e {MaxOpponentPlayers}.");
-            }
 
-            var result = await _matchService.GetMatchResultsAsync(clubId, matchType, opponentCount, page, pageSize, ct);
+            if (!ValidResultFilters(redFilter, opponentDivision, sort)) return BadRequest("Filtros de resultados inválidos.");
+            var result = await _matchService.GetMatchResultsAsync(clubId, matchType, opponentCount, page, pageSize, gameVersion, search, redFilter, opponentDivision, sort, ct);
             return Ok(result);
         }
         catch (Exception ex)
@@ -430,6 +443,7 @@ public class ClubsController : ControllerBase
                 .ToList();
 
             if (ids.Count == 0) return BadRequest("Nenhum clubId válido em 'clubIds'.");
+            if (ids.Count > MaxClubIds) return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
 
             var result = await _matchService.GetClubRecordsAsync(ids, ct);
             return Ok(result);
@@ -461,6 +475,7 @@ public class ClubsController : ControllerBase
                 .ToList();
 
             if (ids.Count == 0) return BadRequest("Nenhum clubId válido em 'clubIds'.");
+            if (ids.Count > MaxClubIds) return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
 
             var result = await _matchService.GetOpponentsAnalysisAsync(ids, ct);
             return Ok(result);
@@ -514,6 +529,9 @@ public class ClubsController : ControllerBase
                 .ToList();
 
             if (ids.Count == 0) return BadRequest("invalid clubIds");
+            if (ids.Count > MaxClubIds) return BadRequest($"Informe no máximo {MaxClubIds} clubIds.");
+            if (count <= 0) return BadRequest("O número de partidas deve ser maior que zero.");
+            count = Math.Min(count, MaxMatchCount);
 
             var result = await _matchService.GetGroupedLimitedAsync(ids, count, opponentCount, ct);
             return Ok(result);
@@ -535,8 +553,9 @@ public class ClubsController : ControllerBase
         _logger.LogInformation("GetGoalAnalysis clubId={ClubId} from={From} to={To}", clubId, from, to);
         try
         {
-            var fromUtc = DateTime.SpecifyKind(from.Date, DateTimeKind.Utc);
-            var toUtc = DateTime.SpecifyKind(to.Date.AddDays(1).AddTicks(-1), DateTimeKind.Utc);
+            // from/to são datas locais (horário de Brasília) -> limites UTC do intervalo [from 00:00, to 23:59:59.9999999]
+            var fromUtc = BrazilTime.StartOfLocalDayUtc(from.Date);
+            var toUtc = BrazilTime.StartOfLocalDayUtc(to.Date.AddDays(1)).AddTicks(-1);
 
             var result = await _goalAnalysisService.GetGoalAnalysisAsync(clubId, fromUtc, toUtc, ct);
             return Ok(result);
@@ -547,6 +566,11 @@ public class ClubsController : ControllerBase
             return StatusCode(500, "Erro interno ao buscar análise de gols.");
         }
     }
+
+    private static bool ValidResultFilters(string redFilter, int? opponentDivision, string sort) =>
+        (redFilter is "all" or "none" or "1plus" or "2plus") &&
+        (!opponentDivision.HasValue || opponentDivision is >= 1 and <= 10) &&
+        (sort is "recent" or "oldest" or "gf" or "ga");
 
     private static int ClampOpp(int value) => Math.Min(MaxOpponentPlayers, Math.Max(MinOpponentPlayers, value));
 

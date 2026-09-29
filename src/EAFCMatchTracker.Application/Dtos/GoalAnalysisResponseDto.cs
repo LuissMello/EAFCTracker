@@ -19,6 +19,7 @@ public class GoalAnalysisResponseDto
 
 public class GoalAnalysisPlayerDto
 {
+    public long PlayerId { get; set; }
     public string Name { get; set; } = "";
     public int Goals { get; set; }
     public int Assists { get; set; }
@@ -28,6 +29,8 @@ public class GoalAnalysisPlayerDto
 
 public class GoalAnalysisPairDto
 {
+    public long FromId { get; set; }
+    public long ToId { get; set; }
     public string From { get; set; } = "";
     public string To { get; set; } = "";
     public int Count { get; set; }
@@ -35,6 +38,9 @@ public class GoalAnalysisPairDto
 
 public class GoalAnalysisTrioDto
 {
+    public long PreId { get; set; }
+    public long AssistId { get; set; }
+    public long ScorerId { get; set; }
     public string Pre { get; set; } = "";
     public string Assist { get; set; } = "";
     public string Scorer { get; set; } = "";
@@ -45,6 +51,9 @@ public class GoalAnalysisLinkDto
 {
     public long MatchId { get; set; }
     public DateTime MatchTimestamp { get; set; }
+    public long ScorerId { get; set; }
+    public long? AssistId { get; set; }
+    public long? PreAssistId { get; set; }
     public string ScorerName { get; set; } = "";
     public string? AssistName { get; set; }
     public string? PreAssistName { get; set; }

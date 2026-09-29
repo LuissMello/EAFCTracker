@@ -16,6 +16,9 @@ public class EAFCContext : DbContext
     public DbSet<PlayoffAchievementEntity> PlayoffAchievements { get; set; }
     public DbSet<SystemFetchAudit> SystemFetchAudits { get; set; }
     public DbSet<MatchGoalLinkEntity> MatchGoalLinks { get; set; }
+    public DbSet<AppSettingEntity> AppSettings { get; set; }
+    public DbSet<TrackedClubEntity> TrackedClubs { get; set; }
+    public DbSet<GameVersionEntity> GameVersions { get; set; }
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -41,6 +44,13 @@ public class EAFCContext : DbContext
         modelBuilder.Entity<MatchClubEntity>()
             .HasIndex(mc => new { mc.MatchId, mc.ClubId })
             .IsUnique();
+
+        // Busca de partidas por clube (Where ClubId = X / join com Matches)
+        modelBuilder.Entity<MatchClubEntity>()
+            .HasIndex(mc => new { mc.ClubId, mc.MatchId });
+
+        modelBuilder.Entity<MatchEntity>()
+            .HasIndex(m => m.Timestamp);
 
         modelBuilder.Entity<MatchClubEntity>()
             .OwnsOne(mc => mc.Details, cb =>
@@ -98,6 +108,10 @@ public class EAFCContext : DbContext
 
         modelBuilder.Entity<OverallStatsEntity>()
             .HasIndex(o => o.ClubId);
+
+        // "Último overall do clube" (ORDER BY UpdatedAtUtc DESC)
+        modelBuilder.Entity<OverallStatsEntity>()
+            .HasIndex(o => new { o.ClubId, o.UpdatedAtUtc });
 
         modelBuilder.Entity<OverallStatsEntity>()
             .Property(o => o.Id)
@@ -173,6 +187,74 @@ public class EAFCContext : DbContext
         modelBuilder.Entity<MatchGoalLinkEntity>()
             .HasIndex(g => new { g.MatchId, g.ClubId });
 
+        // ===============================
+        // GameVersions (edições do jogo: FC25, FC26, FC27...)
+        // ===============================
+        modelBuilder.Entity<GameVersionEntity>(gv =>
+        {
+            gv.HasKey(v => v.Id);
+            gv.Property(v => v.Id).ValueGeneratedNever(); // Id atribuído pelo repositório (max + 1)
+            gv.Property(v => v.Name).IsRequired().HasMaxLength(50);
+            gv.HasIndex(v => v.Version).IsUnique();
 
+            // No máximo UMA edição corrente
+            gv.HasIndex(v => v.IsCurrent)
+              .IsUnique()
+              .HasFilter("\"IsCurrent\" = true");
+
+            gv.HasData(
+                new GameVersionEntity { Id = 1, Version = 25, Name = "FC25", StartsAt = new DateTimeOffset(2024, 9, 27, 0, 0, 0, TimeSpan.Zero), IsCurrent = false },
+                new GameVersionEntity { Id = 2, Version = 26, Name = "FC26", StartsAt = new DateTimeOffset(2025, 9, 26, 0, 0, 0, TimeSpan.Zero), IsCurrent = false },
+                new GameVersionEntity { Id = 3, Version = 27, Name = "FC27", StartsAt = null, IsCurrent = true });
+        });
+
+        // FK opcional (Restrict) Match/OverallStats/PlayoffAchievements/TrackedClubs -> GameVersions (sem navegação)
+        modelBuilder.Entity<MatchEntity>()
+            .HasOne<GameVersionEntity>().WithMany()
+            .HasForeignKey(m => m.GameVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<MatchEntity>().HasIndex(m => m.GameVersionId);
+
+        modelBuilder.Entity<OverallStatsEntity>()
+            .HasOne<GameVersionEntity>().WithMany()
+            .HasForeignKey(o => o.GameVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<OverallStatsEntity>().HasIndex(o => o.GameVersionId);
+
+        modelBuilder.Entity<PlayoffAchievementEntity>()
+            .HasOne<GameVersionEntity>().WithMany()
+            .HasForeignKey(p => p.GameVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<TrackedClubEntity>()
+            .HasOne<GameVersionEntity>().WithMany()
+            .HasForeignKey(c => c.GameVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // AppSettings (chave-valor de configuração)
+        modelBuilder.Entity<AppSettingEntity>()
+            .HasKey(s => s.Key);
+
+        modelBuilder.Entity<AppSettingEntity>()
+            .HasData(
+                new AppSettingEntity { Key = AppSettingEntity.Keys.FetchIntervalMinutes, Value = "60" },
+                new AppSettingEntity { Key = AppSettingEntity.Keys.MaxParallelFetches, Value = "4" }
+            );
+
+        // TrackedClubs (clubes rastreados)
+        modelBuilder.Entity<TrackedClubEntity>()
+            .HasKey(c => c.ClubId);
+
+        modelBuilder.Entity<TrackedClubEntity>()
+            .Property(c => c.ClubId)
+            .ValueGeneratedNever();
+
+        modelBuilder.Entity<TrackedClubEntity>()
+            .HasData(
+                new TrackedClubEntity { ClubId = 355651, Name = null, AddedAt = DateTimeOffset.MinValue },
+                new TrackedClubEntity { ClubId = 352016, Name = null, AddedAt = DateTimeOffset.MinValue },
+                new TrackedClubEntity { ClubId = 349613, Name = null, AddedAt = DateTimeOffset.MinValue },
+                new TrackedClubEntity { ClubId = 312721, Name = null, AddedAt = DateTimeOffset.MinValue }
+            );
     }
 }

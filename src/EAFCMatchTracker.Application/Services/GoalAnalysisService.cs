@@ -1,4 +1,5 @@
 using EAFCMatchTracker.Application.Dtos;
+using EAFCMatchTracker.Application.Exceptions;
 using EAFCMatchTracker.Application.Interfaces.Repositories;
 using EAFCMatchTracker.Application.Interfaces.Services;
 using EAFCMatchTracker.Domain.Entities;
@@ -61,6 +62,9 @@ public class GoalAnalysisService : IGoalAnalysisService
                 g => g.OrderByDescending(mp => mp.MatchId)
                       .Select(mp => !string.IsNullOrWhiteSpace(mp.ProName) ? mp.ProName : mp.Player?.Playername)
                       .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? "");
+        var playerIdMap = allMatchPlayers.Where(mp => mp.Player != null)
+            .GroupBy(mp => mp.PlayerEntityId)
+            .ToDictionary(g => g.Key, g => g.First().Player.PlayerId);
 
         var involvedIds = goalLinks
             .SelectMany(g => new[] { (long?)g.ScorerPlayerEntityId, g.AssistPlayerEntityId, g.PreAssistPlayerEntityId })
@@ -72,21 +76,28 @@ public class GoalAnalysisService : IGoalAnalysisService
             var fallbacks = await _db.Players
                 .AsNoTracking()
                 .Where(p => missingIds.Contains(p.Id))
-                .Select(p => new { p.Id, p.Playername })
+                .Select(p => new { p.Id, p.PlayerId, p.Playername })
                 .ToListAsync(ct);
             foreach (var f in fallbacks)
+            {
+                playerIdMap[f.Id] = f.PlayerId;
                 if (!string.IsNullOrWhiteSpace(f.Playername))
                     nameMap[f.Id] = f.Playername;
+            }
         }
 
         string Resolve(long? id) =>
             id.HasValue && nameMap.TryGetValue(id.Value, out var n) && !string.IsNullOrWhiteSpace(n) ? n : null!;
+        long ResolveId(long id) => playerIdMap.TryGetValue(id, out var playerId) && playerId > 0 ? playerId : -id;
 
         var linkDtos = goalLinks
             .Select(g => new GoalAnalysisLinkDto
             {
                 MatchId = g.MatchId,
                 MatchTimestamp = timestampByMatch.TryGetValue(g.MatchId, out var ts) ? ts : DateTime.MinValue,
+                ScorerId = ResolveId(g.ScorerPlayerEntityId),
+                AssistId = g.AssistPlayerEntityId.HasValue ? ResolveId(g.AssistPlayerEntityId.Value) : null,
+                PreAssistId = g.PreAssistPlayerEntityId.HasValue ? ResolveId(g.PreAssistPlayerEntityId.Value) : null,
                 ScorerName = Resolve(g.ScorerPlayerEntityId) ?? "Desconhecido",
                 AssistName = g.AssistPlayerEntityId.HasValue ? Resolve(g.AssistPlayerEntityId) : null,
                 PreAssistName = g.PreAssistPlayerEntityId.HasValue ? Resolve(g.PreAssistPlayerEntityId) : null,
@@ -108,6 +119,7 @@ public class GoalAnalysisService : IGoalAnalysisService
                 var pre      = g.Sum(mp => (int)mp.PreAssists);
                 return new GoalAnalysisPlayerDto
                 {
+                    PlayerId   = g.Key,
                     Name       = name,
                     Goals      = goals,
                     Assists    = assists,
@@ -116,19 +128,19 @@ public class GoalAnalysisService : IGoalAnalysisService
                 };
             })
             .Where(p => p.Total > 0)
-            .ToDictionary(p => p.Name);
+            .ToList(); // lista: nomes de exibição podem repetir/estar vazios (antes ToDictionary(p => p.Name) estourava)
 
         var pairs = linkDtos
-            .Where(l => !string.IsNullOrEmpty(l.AssistName))
-            .GroupBy(l => (l.AssistName!, l.ScorerName))
-            .Select(g => new GoalAnalysisPairDto { From = g.Key.Item1, To = g.Key.ScorerName, Count = g.Count() })
+            .Where(l => l.AssistId.HasValue)
+            .GroupBy(l => (l.AssistId!.Value, l.ScorerId))
+            .Select(g => new GoalAnalysisPairDto { FromId = g.Key.Item1, ToId = g.Key.ScorerId, From = g.First().AssistName ?? "Desconhecido", To = g.First().ScorerName, Count = g.Count() })
             .OrderByDescending(p => p.Count)
             .ToList();
 
         var trios = linkDtos
-            .Where(l => !string.IsNullOrEmpty(l.PreAssistName) && !string.IsNullOrEmpty(l.AssistName))
-            .GroupBy(l => (l.PreAssistName!, l.AssistName!, l.ScorerName))
-            .Select(g => new GoalAnalysisTrioDto { Pre = g.Key.Item1, Assist = g.Key.Item2, Scorer = g.Key.ScorerName, Count = g.Count() })
+            .Where(l => l.PreAssistId.HasValue && l.AssistId.HasValue)
+            .GroupBy(l => (l.PreAssistId!.Value, l.AssistId!.Value, l.ScorerId))
+            .Select(g => new GoalAnalysisTrioDto { PreId = g.Key.Item1, AssistId = g.Key.Item2, ScorerId = g.Key.ScorerId, Pre = g.First().PreAssistName ?? "Desconhecido", Assist = g.First().AssistName ?? "Desconhecido", Scorer = g.First().ScorerName, Count = g.Count() })
             .OrderByDescending(t => t.Count)
             .ToList();
 
@@ -142,7 +154,7 @@ public class GoalAnalysisService : IGoalAnalysisService
             LinkedGoals = goalLinks.Count,
             TotalAssists = goalLinks.Count(g => g.AssistPlayerEntityId.HasValue),
             TotalPreAssists = goalLinks.Count(g => g.PreAssistPlayerEntityId.HasValue),
-            Players = playerMap.Values.OrderByDescending(p => p.Total).ThenByDescending(p => p.Goals).ToList(),
+            Players = playerMap.OrderByDescending(p => p.Total).ThenByDescending(p => p.Goals).ToList(),
             Pairs = pairs,
             Trios = trios,
             GoalLinks = linkDtos,
@@ -154,6 +166,7 @@ public class GoalAnalysisService : IGoalAnalysisService
         _logger.LogInformation("GoalAnalysisService.GetGoalsByMatchIdAsync matchId={MatchId}", matchId);
 
         var match = await _db.Matches
+            .AsNoTracking()
             .Include(m => m.MatchPlayers)
             .FirstOrDefaultAsync(m => m.MatchId == matchId, ct);
 
@@ -191,6 +204,12 @@ public class GoalAnalysisService : IGoalAnalysisService
         };
     }
 
+    /// <summary>
+    /// Registra os gols de uma partida. Idempotente por clube: os links já existentes dos clubes presentes no
+    /// payload são SUBSTITUÍDOS pelos enviados (o frontend reenvia o conjunto completo), e PreAssists dos
+    /// jogadores desses clubes é recalculado a partir dos links finais (nada é incrementado em duplicidade).
+    /// O ClubId de cada link é o do artilheiro. Tudo em um único SaveChanges (transação).
+    /// </summary>
     public async Task RegisterGoalsAsync(long matchId, RegisterGoalsRequest request, CancellationToken ct)
     {
         _logger.LogInformation("GoalAnalysisService.RegisterGoalsAsync matchId={MatchId}", matchId);
@@ -202,66 +221,100 @@ public class GoalAnalysisService : IGoalAnalysisService
         if (match == null)
             throw new KeyNotFoundException($"Match {matchId} not found.");
 
-        var mp = match.MatchPlayers;
+        var goals = request.Goals ?? new List<GoalRegistrationDto>();
+        var players = match.MatchPlayers.ToList();
+        var byPlayer = players
+            .GroupBy(x => x.PlayerEntityId)
+            .ToDictionary(g => g.Key, g => g.First());
 
-        var realGoals = mp.ToDictionary(x => x.PlayerEntityId, x => x.Goals);
-        var realAssists = mp.ToDictionary(x => x.PlayerEntityId, x => x.Assists);
-
-        var reqGoals = new Dictionary<long, int>();
-        var reqAssists = new Dictionary<long, int>();
-
-        foreach (var g in request.Goals)
+        // 1) Validação (ids pertencem à partida, mesmo clube do artilheiro, limites de gols/assistências)
+        foreach (var g in goals)
         {
-            if (!reqGoals.ContainsKey(g.ScorerPlayerEntityId))
-                reqGoals[g.ScorerPlayerEntityId] = 0;
-            reqGoals[g.ScorerPlayerEntityId]++;
+            if (!byPlayer.TryGetValue(g.ScorerPlayerEntityId, out var scorer))
+                throw new DomainValidationException($"Player {g.ScorerPlayerEntityId} not found in match.");
 
             if (g.AssistPlayerEntityId.HasValue)
             {
-                long id = g.AssistPlayerEntityId.Value;
-                if (!reqAssists.ContainsKey(id)) reqAssists[id] = 0;
-                reqAssists[id]++;
+                var id = g.AssistPlayerEntityId.Value;
+                if (!byPlayer.TryGetValue(id, out var assist))
+                    throw new DomainValidationException($"Assist player {id} not found in match.");
+                if (assist.ClubId != scorer.ClubId)
+                    throw new DomainValidationException($"Assist player {id} does not belong to the scorer's club.");
+                if (id == g.ScorerPlayerEntityId)
+                    throw new DomainValidationException($"Player {id} cannot assist their own goal.");
+            }
+
+            if (g.PreAssistPlayerEntityId.HasValue)
+            {
+                var id = g.PreAssistPlayerEntityId.Value;
+                if (!byPlayer.TryGetValue(id, out var pre))
+                    throw new DomainValidationException($"Pre-assist player {id} not found in match.");
+                if (pre.ClubId != scorer.ClubId)
+                    throw new DomainValidationException($"Pre-assist player {id} does not belong to the scorer's club.");
+                if (id == g.ScorerPlayerEntityId || id == g.AssistPlayerEntityId)
+                    throw new DomainValidationException($"Pre-assist player {id} must differ from the scorer and the assist player.");
             }
         }
 
+        var reqGoals = goals.GroupBy(g => g.ScorerPlayerEntityId).ToDictionary(g => g.Key, g => g.Count());
+        var reqAssists = goals
+            .Where(g => g.AssistPlayerEntityId.HasValue)
+            .GroupBy(g => g.AssistPlayerEntityId!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
+
         foreach (var kv in reqGoals)
         {
-            if (!realGoals.ContainsKey(kv.Key))
-                throw new ArgumentException($"Player {kv.Key} not found in match.");
-            if (kv.Value > realGoals[kv.Key])
-                throw new ArgumentException($"Player {kv.Key} cannot receive {kv.Value} goals (max {realGoals[kv.Key]}).");
+            var real = byPlayer[kv.Key].Goals;
+            if (kv.Value > real)
+                throw new DomainValidationException($"Player {kv.Key} cannot receive {kv.Value} goals (max {real}).");
         }
 
         foreach (var kv in reqAssists)
         {
-            if (!realAssists.ContainsKey(kv.Key))
-                throw new ArgumentException($"Player {kv.Key} not found in match.");
-            if (kv.Value > realAssists[kv.Key])
-                throw new ArgumentException($"Player {kv.Key} cannot receive {kv.Value} assists (max {realAssists[kv.Key]}).");
+            var real = byPlayer[kv.Key].Assists;
+            if (kv.Value > real)
+                throw new DomainValidationException($"Player {kv.Key} cannot receive {kv.Value} assists (max {real}).");
         }
 
-        long clubId = mp.First().ClubId;
+        // 2) Substitui os links dos clubes presentes no payload (inclui links legados gravados com ClubId errado)
+        var affectedClubs = goals.Select(g => byPlayer[g.ScorerPlayerEntityId].ClubId).Distinct().ToList();
+        var affectedPlayerIds = players.Where(x => affectedClubs.Contains(x.ClubId)).Select(x => x.PlayerEntityId).ToList();
 
-        foreach (var g in request.Goals)
+        var existingLinks = await _db.MatchGoalLinks
+            .Where(l => l.MatchId == matchId
+                     && (affectedClubs.Contains(l.ClubId) || affectedPlayerIds.Contains(l.ScorerPlayerEntityId)))
+            .ToListAsync(ct);
+        _db.MatchGoalLinks.RemoveRange(existingLinks);
+
+        var newLinks = goals.Select(g => new MatchGoalLinkEntity
         {
-            var entry = new MatchGoalLinkEntity
-            {
-                MatchId = matchId,
-                ClubId = clubId,
-                ScorerPlayerEntityId = g.ScorerPlayerEntityId,
-                AssistPlayerEntityId = g.AssistPlayerEntityId,
-                PreAssistPlayerEntityId = g.PreAssistPlayerEntityId
-            };
+            MatchId = matchId,
+            ClubId = byPlayer[g.ScorerPlayerEntityId].ClubId,
+            ScorerPlayerEntityId = g.ScorerPlayerEntityId,
+            AssistPlayerEntityId = g.AssistPlayerEntityId,
+            PreAssistPlayerEntityId = g.PreAssistPlayerEntityId
+        }).ToList();
 
-            await _goalRepository.AddGoalLinkAsync(entry, ct);
+        foreach (var link in newLinks)
+            await _goalRepository.AddGoalLinkAsync(link, ct);
 
-            if (g.PreAssistPlayerEntityId.HasValue)
-            {
-                var mpItem = mp.FirstOrDefault(x => x.PlayerEntityId == g.PreAssistPlayerEntityId.Value);
-                if (mpItem != null)
-                    mpItem.PreAssists++;
-            }
-        }
+        // 3) PreAssists = quantidade de links finais em que o jogador é o pré-assistente
+        var removedIds = existingLinks.Select(l => l.Id).ToHashSet();
+        var untouchedLinks = await _db.MatchGoalLinks
+            .AsNoTracking()
+            .Where(l => l.MatchId == matchId && l.PreAssistPlayerEntityId != null)
+            .Select(l => new { l.Id, l.PreAssistPlayerEntityId })
+            .ToListAsync(ct);
+
+        var preAssistCount = newLinks
+            .Where(l => l.PreAssistPlayerEntityId.HasValue)
+            .Select(l => l.PreAssistPlayerEntityId!.Value)
+            .Concat(untouchedLinks.Where(l => !removedIds.Contains(l.Id)).Select(l => l.PreAssistPlayerEntityId!.Value))
+            .GroupBy(id => id)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        foreach (var mpItem in players.Where(x => affectedClubs.Contains(x.ClubId)))
+            mpItem.PreAssists = (short)(preAssistCount.TryGetValue(mpItem.PlayerEntityId, out var n) ? n : 0);
 
         await _goalRepository.SaveChangesAsync(ct);
     }

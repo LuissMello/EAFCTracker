@@ -16,7 +16,8 @@ public class PlayerRepository : IPlayerRepository
 
     public async Task<PlayerEntity?> GetByPlayerIdAsync(long playerId, CancellationToken ct)
     {
-        return await _db.Players.AsNoTracking().FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
+        // PlayerId não é único (há uma linha por clube): ordena para o resultado ser determinístico
+        return await _db.Players.AsNoTracking().OrderBy(p => p.Id).FirstOrDefaultAsync(p => p.PlayerId == playerId, ct);
     }
 
     public async Task<List<MatchPlayerEntity>> GetMatchPlayersForClubAsync(long clubId, CancellationToken ct)
@@ -56,12 +57,15 @@ public class PlayerRepository : IPlayerRepository
         var stats = await _db.OverallStats
             .AsNoTracking()
             .Where(os => clubIds.Contains(os.ClubId))
-            .Select(os => new { os.ClubId, os.CurrentDivision })
+            .Select(os => new { os.ClubId, os.CurrentDivision, os.UpdatedAtUtc, os.Id })
             .ToListAsync(ct);
 
+        // Linha mais recente de cada clube (determinístico)
         return stats
             .GroupBy(x => x.ClubId)
-            .ToDictionary(g => g.Key, g => (int?)g.First().CurrentDivision);
+            .ToDictionary(
+                g => g.Key,
+                g => (int?)g.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).First().CurrentDivision);
     }
 
     public Task UpdateMatchPlayersRangeAsync(IEnumerable<MatchPlayerEntity> players)

@@ -29,7 +29,7 @@ public class CalendarController : ControllerBase
     {
         _logger.LogInformation("GetMonthlyCalendar called with year={Year}, month={Month}, clubId={ClubId}, clubIds={ClubIds}", year, month, clubId, clubIds);
 
-        if (year <= 0 || month < 1 || month > 12)
+        if (year <= 0 || year > 9998 || month < 1 || month > 12)
         {
             _logger.LogWarning("Invalid date parameters: year={Year}, month={Month}", year, month);
             return BadRequest("Parâmetros de data inválidos.");

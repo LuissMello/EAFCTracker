@@ -19,7 +19,7 @@ public class PlayersController : ControllerBase
     }
 
     [HttpGet("{playerId:long}")]
-    public async Task<ActionResult<PlayerEntity>> GetPlayerById(long playerId, CancellationToken ct)
+    public async Task<ActionResult<PlayerDto>> GetPlayerById(long playerId, CancellationToken ct)
     {
         _logger.LogInformation("GetPlayerById called with playerId: {PlayerId}", playerId);
         try

@@ -28,7 +28,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshClubsOverall");
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os clubes.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os clubes." });
         }
     }
 
@@ -44,12 +44,13 @@ public class MaintenanceController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new { message = ex.Message });
+            _logger.LogWarning(ex, "Resource not found in maintenance operation (clubId={ClubId})", clubId);
+            return NotFound(new { message = "Recurso não encontrado." });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshClubCurrentDivision for clubId={ClubId}", clubId);
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar a divisão do clube.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar a divisão do clube." });
         }
     }
 
@@ -65,12 +66,13 @@ public class MaintenanceController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new { message = ex.Message });
+            _logger.LogWarning(ex, "Resource not found in maintenance operation (clubId={ClubId})", clubId);
+            return NotFound(new { message = "Recurso não encontrado." });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in EnrichMatchPlayersWithMembers for clubId={ClubId}", clubId);
-            return StatusCode(500, new { error = "Ocorreu um erro ao enriquecer os jogadores do clube.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao enriquecer os jogadores do clube." });
         }
     }
 
@@ -89,7 +91,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshClubExternal for clubId={ClubId}", clubId);
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar dados externos do clube.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar dados externos do clube." });
         }
     }
 
@@ -106,7 +108,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshOpponentsCurrentDivision for clubId={ClubId}", clubId);
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar divisões dos oponentes.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar divisões dos oponentes." });
         }
     }
 
@@ -121,7 +123,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshAllPlayoffsAchievements");
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os playoffs.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os playoffs." });
         }
     }
 
@@ -136,7 +138,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshAllOverallStats");
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os overall stats.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar os overall stats." });
         }
     }
 
@@ -151,7 +153,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshAllCurrentDivisions");
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar as divisões dos clubes.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar as divisões dos clubes." });
         }
     }
 
@@ -166,7 +168,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in EnrichAllMatchPlayersWithMembers");
-            return StatusCode(500, new { error = "Ocorreu um erro ao enriquecer os jogadores dos clubes.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao enriquecer os jogadores dos clubes." });
         }
     }
 
@@ -181,7 +183,7 @@ public class MaintenanceController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in RefreshEverything");
-            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar tudo.", details = ex.Message });
+            return StatusCode(500, new { error = "Ocorreu um erro ao atualizar tudo." });
         }
     }
 

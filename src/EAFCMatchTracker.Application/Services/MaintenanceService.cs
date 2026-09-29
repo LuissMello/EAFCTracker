@@ -116,7 +116,8 @@ public class MaintenanceService : IMaintenanceService
         if (!div.HasValue)
             throw new KeyNotFoundException("Divisão atual não encontrada na EA para este clube/nome.");
 
-        var rows = await _clubRepository.GetAllOverallStatsByClubIdAsync(clubId, ct);
+        // Só a linha mais recente: as anteriores guardam a divisão de cada partida na época
+        var rows = await GetLatestOverallRowsAsync(clubId, ct);
         if (rows.Count == 0)
             throw new KeyNotFoundException("Nenhum OverallStats encontrado para este clube.");
 
@@ -178,6 +179,10 @@ public class MaintenanceService : IMaintenanceService
         int updated = 0, detailsUpdated = 0;
         var results = new List<object>();
 
+        // Uma query para a linha mais recente de todos os oponentes (antes: 1 query por oponente)
+        var latestByOpponent = await _clubRepository.GetLatestOverallStatsByClubIdsAsync(
+            grouped.Select(g => g.OpponentId).ToList(), ct);
+
         foreach (var opp in grouped)
         {
             var name = opp.Name ?? await _clubRepository.GetLatestClubNameAsync(opp.OpponentId, ct);
@@ -195,7 +200,9 @@ public class MaintenanceService : IMaintenanceService
                 continue;
             }
 
-            var detailsRows = await _clubRepository.GetAllOverallStatsByClubIdAsync(opp.OpponentId, ct);
+            var detailsRows = latestByOpponent.TryGetValue(opp.OpponentId, out var latestRow)
+                ? new List<OverallStatsEntity> { latestRow }
+                : new List<OverallStatsEntity>();
             if (detailsRows.Count == 0)
             {
                 results.Add(new { opponentId = opp.OpponentId, name, currentDivision = div.Value, status = "no_overall_rows" });
@@ -254,7 +261,9 @@ public class MaintenanceService : IMaintenanceService
             var existing = await _clubRepository.GetOverallStatsByClubIdAsync(clubId, ct);
             if (existing is null)
             {
-                await _clubRepository.AddOverallStatsAsync(MapToEntity(clubId, overallDto), ct);
+                var added = MapToEntity(clubId, overallDto);
+                added.GameVersionId = await ResolveGameVersionIdForClubAsync(clubId, ct);
+                await _clubRepository.AddOverallStatsAsync(added, ct);
                 overallInserted++;
             }
             else
@@ -286,7 +295,7 @@ public class MaintenanceService : IMaintenanceService
             var div = await FetchCurrentDivisionByNameAsync(clubName, clubId, ct);
             if (!div.HasValue) continue;
 
-            var rows = await _clubRepository.GetAllOverallStatsByClubIdAsync(clubId, ct);
+            var rows = await GetLatestOverallRowsAsync(clubId, ct);
             if (rows.Count == 0) continue;
 
             foreach (var d in rows) d.CurrentDivision = div.Value;
@@ -359,7 +368,13 @@ public class MaintenanceService : IMaintenanceService
             if (overallDto is not null)
             {
                 var existing = await _clubRepository.GetOverallStatsByClubIdAsync(clubId, ct);
-                if (existing is null) { await _clubRepository.AddOverallStatsAsync(MapToEntity(clubId, overallDto), ct); overallInserted++; }
+                if (existing is null)
+                {
+                    var added = MapToEntity(clubId, overallDto);
+                    added.GameVersionId = await ResolveGameVersionIdForClubAsync(clubId, ct);
+                    await _clubRepository.AddOverallStatsAsync(added, ct);
+                    overallInserted++;
+                }
                 else { MapToEntity(clubId, overallDto, existing); await _clubRepository.UpdateOverallStatsAsync(existing); overallUpdated++; }
             }
 
@@ -377,7 +392,7 @@ public class MaintenanceService : IMaintenanceService
                 var div = await FetchCurrentDivisionByNameAsync(clubName!, clubId, ct);
                 if (div.HasValue)
                 {
-                    var rows = await _clubRepository.GetAllOverallStatsByClubIdAsync(clubId, ct);
+                    var rows = await GetLatestOverallRowsAsync(clubId, ct);
                     if (rows.Count > 0)
                     {
                         foreach (var d in rows) d.CurrentDivision = div.Value;
@@ -619,8 +634,8 @@ public class MaintenanceService : IMaintenanceService
         try { payload = JsonSerializer.Deserialize<List<SearchClubResult>>(json, options) ?? new(); }
         catch { payload = new(); }
 
-        var byId = payload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
-        var pick = byId ?? payload.FirstOrDefault();
+        // Exige o mesmo clubId: a busca por nome pode devolver clubes homônimos/parecidos
+        var pick = payload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
         if (pick == null) return null;
 
         var division = ToNullableInt(pick.currentDivision);
@@ -635,8 +650,7 @@ public class MaintenanceService : IMaintenanceService
                 try { allTimePayload = JsonSerializer.Deserialize<List<SearchClubResult>>(allTimeJson, options) ?? new(); }
                 catch { allTimePayload = new(); }
 
-                var allTimeById = allTimePayload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
-                var allTimePick = allTimeById ?? allTimePayload.FirstOrDefault();
+                var allTimePick = allTimePayload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
                 if (allTimePick != null)
                     return ToNullableInt(allTimePick.currentDivision);
             }
@@ -665,8 +679,13 @@ public class MaintenanceService : IMaintenanceService
     {
         int inserted = 0, updated = 0;
         var existing = await _clubRepository.GetPlayoffAchievementsForUpdateAsync(clubId, ct);
-        var bySeason = existing.ToDictionary(p => p.SeasonId, StringComparer.OrdinalIgnoreCase);
+        var bySeason = existing
+            .GroupBy(p => p.SeasonId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var utcNow = DateTime.UtcNow;
+        int? gameVersionId = null;
+        var gameVersionResolved = false;
+        var addedSeasons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var it in items)
         {
@@ -678,11 +697,21 @@ public class MaintenanceService : IMaintenanceService
                 row.BestDivision = it.BestDivision;
                 row.BestFinishGroup = it.BestFinishGroup;
                 row.UpdatedAtUtc = utcNow;
-                await _clubRepository.UpdatePlayoffAchievementAsync(row);
-                updated++;
+                // Entidade adicionada neste mesmo payload (temporada repetida) não pode virar UPDATE
+                if (!addedSeasons.Contains(it.SeasonId))
+                {
+                    await _clubRepository.UpdatePlayoffAchievementAsync(row);
+                    updated++;
+                }
             }
             else
             {
+                if (!gameVersionResolved)
+                {
+                    gameVersionId = await ResolveGameVersionIdForClubAsync(clubId, ct);
+                    gameVersionResolved = true;
+                }
+
                 var entity = new PlayoffAchievementEntity
                 {
                     ClubId = clubId,
@@ -690,10 +719,13 @@ public class MaintenanceService : IMaintenanceService
                     SeasonName = it.SeasonName,
                     BestDivision = it.BestDivision,
                     BestFinishGroup = it.BestFinishGroup,
+                    GameVersionId = gameVersionId,
                     RetrievedAtUtc = utcNow,
                     UpdatedAtUtc = utcNow
                 };
                 await _clubRepository.AddPlayoffAchievementAsync(entity, ct);
+                bySeason[it.SeasonId] = entity; // mesma temporada repetida no payload não gera INSERT duplicado
+                addedSeasons.Add(it.SeasonId);
                 inserted++;
             }
         }
@@ -706,7 +738,9 @@ public class MaintenanceService : IMaintenanceService
         var existing = await _clubRepository.GetOverallStatsByClubIdAsync(clubId, ct);
         if (existing is null)
         {
-            await _clubRepository.AddOverallStatsAsync(MapToEntity(clubId, src), ct);
+            var added = MapToEntity(clubId, src);
+            added.GameVersionId = await ResolveGameVersionIdForClubAsync(clubId, ct);
+            await _clubRepository.AddOverallStatsAsync(added, ct);
         }
         else
         {
@@ -736,6 +770,38 @@ public class MaintenanceService : IMaintenanceService
         o.LeagueAppearances = src.LeagueAppearances;
         o.UpdatedAtUtc = DateTime.UtcNow;
         return o;
+    }
+
+    /// <summary>Somente a linha mais recente de OverallStats do clube (0 ou 1 item, rastreada).</summary>
+    private async Task<List<OverallStatsEntity>> GetLatestOverallRowsAsync(long clubId, CancellationToken ct)
+    {
+        var latest = await _clubRepository.GetOverallStatsByClubIdAsync(clubId, ct);
+        return latest is null ? new List<OverallStatsEntity>() : new List<OverallStatsEntity> { latest };
+    }
+
+    /// <summary>
+    /// Edição do jogo para linhas criadas fora do fluxo de partidas: a do clube rastreado; senão a da partida
+    /// mais recente do clube; senão a edição corrente.
+    /// </summary>
+    private async Task<int?> ResolveGameVersionIdForClubAsync(long clubId, CancellationToken ct)
+    {
+        var tracked = await _db.TrackedClubs.AsNoTracking()
+            .Where(c => c.ClubId == clubId)
+            .Select(c => c.GameVersionId)
+            .FirstOrDefaultAsync(ct);
+        if (tracked.HasValue) return tracked;
+
+        var fromMatch = await _db.MatchClubs.AsNoTracking()
+            .Where(mc => mc.ClubId == clubId)
+            .OrderByDescending(mc => mc.Match.Timestamp)
+            .Select(mc => mc.Match.GameVersionId)
+            .FirstOrDefaultAsync(ct);
+        if (fromMatch.HasValue) return fromMatch;
+
+        return await _db.GameVersions.AsNoTracking()
+            .Where(v => v.IsCurrent)
+            .Select(v => (int?)v.Id)
+            .FirstOrDefaultAsync(ct);
     }
 
     private static int EnrichPlayers(

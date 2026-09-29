@@ -2,9 +2,11 @@ using EAFCMatchTracker.Application.Dtos;
 using EAFCMatchTracker.Application.Extensions;
 using EAFCMatchTracker.Application.Interfaces.Repositories;
 using EAFCMatchTracker.Application.Interfaces.Services;
+using EAFCMatchTracker.Application.Time;
 using EAFCMatchTracker.Domain.Entities;
 using EAFCMatchTracker.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using DomainMatchType = EAFCMatchTracker.Domain.Entities.MatchType;
 
@@ -18,21 +20,47 @@ public class MatchService : IMatchService
     private readonly IMatchRepository _matchRepository;
     private readonly IPlayerRepository _playerRepository;
     private readonly EAFCContext _db;
+    private readonly IMemoryCache _cache;
     private readonly ILogger<MatchService> _logger;
+
+    // Cache curto das duas consultas mais pesadas (carregam todas as partidas do clube). A chave inclui
+    // "contagem + última partida", então nova partida/exclusão invalida na hora; o TTL cobre as demais
+    // alterações (ex.: enriquecimento de jogadores).
+    private static readonly TimeSpan HeavyQueryTtl = TimeSpan.FromSeconds(60);
 
     public MatchService(
         IMatchRepository matchRepository,
         IPlayerRepository playerRepository,
         EAFCContext db,
+        IMemoryCache cache,
         ILogger<MatchService> logger)
     {
         _matchRepository = matchRepository;
         _playerRepository = playerRepository;
         _db = db;
+        _cache = cache;
         _logger = logger;
     }
 
+    private async Task<string> GetDataVersionKeyAsync(CancellationToken ct)
+    {
+        var count = await _db.Matches.AsNoTracking().CountAsync(ct);
+        var maxTs = await _db.Matches.AsNoTracking().MaxAsync(m => (DateTime?)m.Timestamp, ct);
+        return $"{count}:{maxTs?.Ticks ?? 0}";
+    }
+
     public async Task<FullMatchStatisticsDto> GetMatchStatisticsAsync(long clubId, CancellationToken ct)
+    {
+        var key = $"match-stats:{clubId}:{await GetDataVersionKeyAsync(ct)}";
+        if (_cache.TryGetValue(key, out FullMatchStatisticsDto? cached) && cached is not null)
+            return cached;
+
+        var result = await ComputeMatchStatisticsAsync(clubId, ct);
+        _cache.Set(key, result, HeavyQueryTtl);
+        return result;
+    }
+
+    private async Task<FullMatchStatisticsDto> ComputeMatchStatisticsAsync(long clubId, CancellationToken ct)
     {
         _logger.LogInformation("MatchService.GetMatchStatisticsAsync clubId={ClubId}", clubId);
 
@@ -153,11 +181,12 @@ public class MatchService : IMatchService
         if (applyOpponentFilter)
             q = ApplyOpponentFilter(q, ids[0], opponentCount);
 
-        var matches = await q.OrderBy(m => m.Timestamp).ToListAsync(ct);
+        var matches = await q.OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId).ToListAsync(ct);
         if (matches.Count == 0) return new List<FullMatchStatisticsByDayDto>();
 
+        // Dia = dia do calendário de Brasília (os limites startUtc/endExclusiveUtc já vêm em horário de Brasília)
         return matches
-            .GroupBy(m => m.Timestamp.Date)
+            .GroupBy(m => BrazilTime.ToLocal(m.Timestamp).Date)
             .Select(g =>
             {
                 var dayMatches = g.ToList();
@@ -256,7 +285,7 @@ public class MatchService : IMatchService
         if (matches.Count == 0) return new List<PlayerStatisticsByDayDto>();
 
         return matches
-            .GroupBy(m => m.Timestamp.Date)
+            .GroupBy(m => BrazilTime.ToLocal(m.Timestamp).Date)
             .Select(g =>
             {
                 var dayMatches = g.ToList();
@@ -286,9 +315,9 @@ public class MatchService : IMatchService
     }
 
     public async Task<PagedResult<MatchResultDto>> GetMatchResultsAsync(
-        long clubId, DomainMatchType matchType, int? opponentCount, int page, int pageSize, CancellationToken ct)
+        long clubId, DomainMatchType matchType, int? opponentCount, int page, int pageSize, int? gameVersion, string? search, string redFilter, int? opponentDivision, string sort, CancellationToken ct)
     {
-        _logger.LogInformation("MatchService.GetMatchResultsAsync clubId={ClubId}", clubId);
+        _logger.LogInformation("MatchService.GetMatchResultsAsync clubId={ClubId} gameVersion={GameVersion}", clubId, gameVersion);
 
         IQueryable<MatchEntity> q = _db.Matches.AsNoTracking()
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId));
@@ -297,17 +326,20 @@ public class MatchService : IMatchService
         else if (matchType == DomainMatchType.Playoff) q = q.Where(m => m.MatchType == DomainMatchType.Playoff);
 
         q = ApplyOpponentFilter(q, clubId, opponentCount);
+        q = await ApplyGameVersionFilterAsync(q, gameVersion, ct);
+        q = await ApplyResultFiltersAsync(q, new List<long> { clubId }, search, redFilter, opponentDivision, ct);
 
         var totalCount = await q.CountAsync(ct);
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
         var skip = (page - 1) * pageSize;
 
-        var matches = await _matchRepository.GetPagedMatchesAsync(q, skip, pageSize, ct);
+        var matches = await LoadResultPageAsync(q, new List<long> { clubId }, sort, skip, pageSize, ct);
 
         var fallbackDivByClub = await _playerRepository.GetFallbackDivisionsAsync(
             matches.SelectMany(m => m.Clubs).Where(c => c.CurrentDivision == null).Select(c => c.ClubId).Distinct().ToList(), ct);
 
-        var items = BuildMatchResultDtos(matches, fallbackDivByClub);
+        var versionNumberById = await GetVersionNumberByIdAsync(ct);
+        var items = BuildMatchResultDtos(matches, fallbackDivByClub, versionNumberById);
 
         return new PagedResult<MatchResultDto>
         {
@@ -322,9 +354,9 @@ public class MatchService : IMatchService
     }
 
     public async Task<PagedResult<MatchResultDto>> GetMultiClubMatchResultsAsync(
-        List<long> ids, DomainMatchType matchType, int? opponentCount, int page, int pageSize, CancellationToken ct)
+        List<long> ids, DomainMatchType matchType, int? opponentCount, int page, int pageSize, int? gameVersion, string? search, string redFilter, int? opponentDivision, string sort, CancellationToken ct)
     {
-        _logger.LogInformation("MatchService.GetMultiClubMatchResultsAsync ids={Ids}", string.Join(",", ids));
+        _logger.LogInformation("MatchService.GetMultiClubMatchResultsAsync ids={Ids} gameVersion={GameVersion}", string.Join(",", ids), gameVersion);
 
         IQueryable<MatchEntity> q = _db.Matches.AsNoTracking()
             .Where(m => m.Clubs.Any(c => ids.Contains(c.ClubId)));
@@ -343,16 +375,20 @@ public class MatchService : IMatchService
                  .Count() == oc);
         }
 
+        q = await ApplyGameVersionFilterAsync(q, gameVersion, ct);
+        q = await ApplyResultFiltersAsync(q, ids, search, redFilter, opponentDivision, ct);
+
         var totalCount = await q.CountAsync(ct);
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
         var skip = (page - 1) * pageSize;
 
-        var matches = await _matchRepository.GetPagedMatchesAsync(q, skip, pageSize, ct);
+        var matches = await LoadResultPageAsync(q, ids, sort, skip, pageSize, ct);
 
         var fallbackDivByClub = await _playerRepository.GetFallbackDivisionsAsync(
             matches.SelectMany(m => m.Clubs).Where(c => c.CurrentDivision == null).Select(c => c.ClubId).Distinct().ToList(), ct);
 
-        var items = BuildMatchResultDtos(matches, fallbackDivByClub);
+        var versionNumberById = await GetVersionNumberByIdAsync(ct);
+        var items = BuildMatchResultDtos(matches, fallbackDivByClub, versionNumberById);
 
         return new PagedResult<MatchResultDto>
         {
@@ -366,10 +402,84 @@ public class MatchService : IMatchService
         };
     }
 
+    private async Task<IQueryable<MatchEntity>> ApplyResultFiltersAsync(
+        IQueryable<MatchEntity> query, List<long> ids, string? search, string redFilter, int? opponentDivision, CancellationToken ct)
+    {
+        var term = search?.Trim();
+        if (!string.IsNullOrEmpty(term))
+        {
+            term = term.ToLower();
+            query = query.Where(m => m.Clubs.Any(c => c.Details != null && c.Details.Name.ToLower().Contains(term)));
+        }
+
+        query = redFilter switch
+        {
+            "none" => query.Where(m => !m.MatchPlayers.Any(p => p.Redcards > 0)),
+            "1plus" => query.Where(m => m.MatchPlayers.Any(p => p.Redcards > 0)),
+            "2plus" => query.Where(m => m.MatchPlayers.Sum(p => (int)p.Redcards) >= 2),
+            _ => query
+        };
+
+        if (opponentDivision.HasValue)
+        {
+            var division = opponentDivision.Value;
+            var clubsWithoutDivision = await query.SelectMany(m => m.Clubs)
+                .Where(c => c.CurrentDivision == null)
+                .Select(c => c.ClubId).Distinct().ToListAsync(ct);
+            var fallbackDivisions = await _playerRepository.GetFallbackDivisionsAsync(clubsWithoutDivision, ct);
+            var fallbackClubIds = fallbackDivisions.Where(kv => kv.Value == division).Select(kv => kv.Key).ToList();
+            query = query.Where(m => m.Clubs.Any(c =>
+                c.Team != m.Clubs.Where(selected => ids.Contains(selected.ClubId))
+                    .OrderBy(selected => selected.Team).Select(selected => selected.Team).FirstOrDefault()
+                && (c.CurrentDivision == division ||
+                    (c.CurrentDivision == null && fallbackClubIds.Contains(c.ClubId)))));
+        }
+
+        return query;
+    }
+
+    private async Task<List<MatchEntity>> LoadResultPageAsync(
+        IQueryable<MatchEntity> query, List<long> ids, string sort, int skip, int pageSize, CancellationToken ct)
+    {
+        var ordered = sort switch
+        {
+            "oldest" => query.OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId),
+            "gf" => query.OrderByDescending(m => m.Clubs.Where(c => ids.Contains(c.ClubId))
+                    .OrderBy(c => c.Team).Select(c => c.Goals).FirstOrDefault())
+                .ThenByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId),
+            "ga" => query.OrderByDescending(m => m.Clubs.Where(c => ids.Contains(c.ClubId))
+                    .OrderBy(c => c.Team).Select(c => c.GoalsAgainst).FirstOrDefault())
+                .ThenByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId),
+            _ => query.OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId)
+        };
+
+        return await ordered.Skip(skip).Take(pageSize)
+            .Include(m => m.Clubs).ThenInclude(c => c.Details)
+            .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+            .AsNoTracking().ToListAsync(ct);
+    }
+
     public async Task DeleteMatchesByClubAsync(long clubId, CancellationToken ct)
     {
         _logger.LogInformation("MatchService.DeleteMatchesByClubAsync clubId={ClubId}", clubId);
-        var matchIds = await _matchRepository.GetMatchIdsByClubIdAsync(clubId, ct);
+
+        // Opção mais segura: só apaga partidas em que o clube participou e em que NENHUM outro clube rastreado
+        // participou (partidas contra outro clube rastreado pertencem também à história dele e são mantidas).
+        var otherTracked = await _db.TrackedClubs.AsNoTracking()
+            .Where(c => c.ClubId != clubId)
+            .Select(c => c.ClubId)
+            .ToListAsync(ct);
+
+        var allIds = await _matchRepository.GetMatchIdsByClubIdAsync(clubId, ct);
+        var matchIds = otherTracked.Count == 0
+            ? allIds
+            : await _matchRepository.GetMatchIdsExclusiveToClubAsync(clubId, otherTracked, ct);
+
+        if (matchIds.Count < allIds.Count)
+            _logger.LogInformation(
+                "DeleteMatchesByClubAsync clubId={ClubId}: {Kept} partida(s) mantida(s) por envolverem outro clube rastreado",
+                clubId, allIds.Count - matchIds.Count);
+
         if (matchIds.Count == 0) return;
         await _matchRepository.DeleteMatchesAsync(matchIds, ct);
     }
@@ -401,7 +511,7 @@ public class MatchService : IMatchService
         var lastMatches = await qBase
             .GroupBy(x => x.MatchId)
             .Select(g => new { MatchId = g.Key, Date = g.Max(x => x.Date) })
-            .OrderByDescending(x => x.Date)
+            .OrderByDescending(x => x.Date).ThenByDescending(x => x.MatchId)
             .Take(count)
             .ToListAsync(ct);
 
@@ -428,6 +538,17 @@ public class MatchService : IMatchService
     }
 
     public async Task<ClubRecordsDto> GetClubRecordsAsync(List<long> ids, CancellationToken ct)
+    {
+        var key = $"club-records:{string.Join(",", ids.OrderBy(i => i))}:{await GetDataVersionKeyAsync(ct)}";
+        if (_cache.TryGetValue(key, out ClubRecordsDto? cached) && cached is not null)
+            return cached;
+
+        var result = await ComputeClubRecordsAsync(ids, ct);
+        _cache.Set(key, result, HeavyQueryTtl);
+        return result;
+    }
+
+    private async Task<ClubRecordsDto> ComputeClubRecordsAsync(List<long> ids, CancellationToken ct)
     {
         _logger.LogInformation("MatchService.GetClubRecordsAsync ids={Ids}", string.Join(",", ids));
 
@@ -671,7 +792,7 @@ public class MatchService : IMatchService
     {
         _logger.LogInformation("MatchService.GetAllMatchesAsync page={Page}, pageSize={PageSize}", page, pageSize);
 
-        var q = _db.Matches.AsNoTracking().OrderByDescending(m => m.Timestamp);
+        var q = _db.Matches.AsNoTracking().OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId);
         var total = await q.CountAsync(ct);
         var items = await q.Skip((page - 1) * pageSize).Take(pageSize).ToMatchDtoListAsync(ct);
 
@@ -756,29 +877,32 @@ public class MatchService : IMatchService
     {
         _logger.LogInformation("MatchService.DeleteMatchAsync matchId={MatchId}", matchId);
 
-        var match = await _db.Matches
-            .Include(m => m.MatchPlayers)
-            .Include(m => m.Clubs)
-            .FirstOrDefaultAsync(m => m.MatchId == matchId, ct);
-
-        if (match == null)
+        if (!await _db.Matches.AsNoTracking().AnyAsync(m => m.MatchId == matchId, ct))
             throw new KeyNotFoundException($"Match {matchId} not found.");
 
-        var matchPlayers = await _db.MatchPlayers.Where(mp => mp.MatchId == matchId).ToListAsync(ct);
-        var statsIds = matchPlayers.Select(mp => mp.PlayerMatchStatsEntityId).ToList();
-        var playerMatchStats = await _db.PlayerMatchStats.Where(pms => statsIds.Contains(pms.Id)).ToListAsync(ct);
-
-        _db.PlayerMatchStats.RemoveRange(playerMatchStats);
-        _db.MatchPlayers.RemoveRange(matchPlayers);
-
-        var matchClubs = await _db.MatchClubs.Where(mc => mc.MatchId == matchId).ToListAsync(ct);
-        _db.MatchClubs.RemoveRange(matchClubs);
-
-        _db.Matches.Remove(match);
-        await _db.SaveChangesAsync(ct);
+        // Snapshots de atributos (PlayerMatchStats) são compartilhados entre partidas: o repositório só apaga
+        // os que ficaram sem referência. Partida apagada é reimportada enquanto estiver nas últimas 20 da EA.
+        await _matchRepository.DeleteMatchesAsync(new[] { matchId }, ct);
     }
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>gameVersion nulo = todas as edições. Edição desconhecida = nenhum resultado.</summary>
+    private async Task<IQueryable<MatchEntity>> ApplyGameVersionFilterAsync(IQueryable<MatchEntity> q, int? gameVersion, CancellationToken ct)
+    {
+        if (!gameVersion.HasValue) return q;
+
+        var versionId = await _db.GameVersions.AsNoTracking()
+            .Where(v => v.Version == gameVersion.Value)
+            .Select(v => (int?)v.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (versionId is null) return q.Where(m => false);
+        return q.Where(m => m.GameVersionId == versionId);
+    }
+
+    private Task<Dictionary<int, int>> GetVersionNumberByIdAsync(CancellationToken ct) =>
+        _db.GameVersions.AsNoTracking().ToDictionaryAsync(v => v.Id, v => v.Version, ct);
 
     private static IQueryable<MatchEntity> ApplyOpponentFilter(IQueryable<MatchEntity> q, long clubId, int? opponentCount)
     {
@@ -823,15 +947,21 @@ public class MatchService : IMatchService
         return (wins, draws, losses, counted);
     }
 
-    private static List<MatchResultDto> BuildMatchResultDtos(
+    private List<MatchResultDto> BuildMatchResultDtos(
         IEnumerable<MatchEntity> matches,
-        Dictionary<long, int?> fallbackDivByClub)
+        Dictionary<long, int?> fallbackDivByClub,
+        Dictionary<int, int> versionNumberById)
     {
         var items = new List<MatchResultDto>();
         foreach (var match in matches)
         {
             var clubs = match.Clubs.OrderBy(c => c.Team).ToList();
-            if (clubs.Count != 2) continue;
+            if (clubs.Count != 2)
+            {
+                // A página pode vir com menos itens que pageSize; registra para diagnóstico
+                _logger.LogDebug("Partida {MatchId} ignorada nos resultados: possui {Count} clube(s) (esperado 2)", match.MatchId, clubs.Count);
+                continue;
+            }
             var a = clubs[0];
             var b = clubs[1];
 
@@ -845,6 +975,7 @@ public class MatchService : IMatchService
             {
                 MatchId = match.MatchId,
                 Timestamp = match.Timestamp,
+                GameVersion = match.GameVersionId.HasValue && versionNumberById.TryGetValue(match.GameVersionId.Value, out var gv) ? gv : null,
                 ClubAName = a.Details?.Name ?? $"Clube {a.ClubId}",
                 ClubAGoals = a.Goals,
                 ClubARedCards = redA,

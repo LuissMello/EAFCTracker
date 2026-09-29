@@ -15,6 +15,9 @@ public interface IMatchRepository
     Task<List<MatchEntity>> GetMatchesByClubIdsAsync(IReadOnlyCollection<long> ids, CancellationToken ct);
     Task<MatchEntity?> GetMatchWithPlayersAndClubsAsync(long matchId, CancellationToken ct);
     Task<List<long>> GetMatchIdsByClubIdAsync(long clubId, CancellationToken ct);
+
+    /// <summary>Partidas do clube em que NENHUM dos clubes de <paramref name="otherClubIds"/> participou.</summary>
+    Task<List<long>> GetMatchIdsExclusiveToClubAsync(long clubId, IReadOnlyCollection<long> otherClubIds, CancellationToken ct);
     Task DeleteMatchesAsync(IEnumerable<long> matchIds, CancellationToken ct);
     Task<List<MatchEntity>> GetRecentMatchesWithFullDataAsync(int count, CancellationToken ct);
     Task<List<MatchEntity>> GetMatchesForTrendsAsync(long clubId, int last, DateTime? since, DateTime? until, CancellationToken ct);

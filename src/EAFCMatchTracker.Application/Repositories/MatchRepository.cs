@@ -39,7 +39,7 @@ public class MatchRepository : IMatchRepository
                 .ThenInclude(mp => mp.Player)
             .Include(m => m.MatchPlayers.Where(mp => mp.ClubId == clubId))
                 .ThenInclude(mp => mp.PlayerMatchStats)
-            .OrderByDescending(m => m.Timestamp)
+            .OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId)
             .Take(count)
             .ToListAsync(ct);
     }
@@ -51,7 +51,7 @@ public class MatchRepository : IMatchRepository
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
-            .OrderByDescending(m => m.Timestamp)
+            .OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId)
             .ToListAsync(ct);
     }
 
@@ -64,7 +64,7 @@ public class MatchRepository : IMatchRepository
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .Where(m => m.Clubs.Any(c => ids.Contains(c.ClubId)))
             .Where(m => m.Timestamp >= startUtc && m.Timestamp < endExclusiveUtc)
-            .OrderBy(m => m.Timestamp)
+            .OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId)
             .ToListAsync(ct);
     }
 
@@ -77,7 +77,7 @@ public class MatchRepository : IMatchRepository
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .Where(m => m.MatchPlayers.Any(mp => mp.Player.PlayerId == playerId && clubIds.Contains(mp.ClubId)))
             .Where(m => m.Timestamp >= startUtc && m.Timestamp < endExclusiveUtc)
-            .OrderBy(m => m.Timestamp)
+            .OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId)
             .ToListAsync(ct);
     }
 
@@ -106,7 +106,7 @@ public class MatchRepository : IMatchRepository
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .Where(m => m.Clubs.Any(c => ids.Contains(c.ClubId)))
-            .OrderBy(m => m.Timestamp)
+            .OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId)
             .ToListAsync(ct);
     }
 
@@ -122,42 +122,66 @@ public class MatchRepository : IMatchRepository
     public async Task<List<long>> GetMatchIdsByClubIdAsync(long clubId, CancellationToken ct)
     {
         return await _db.MatchClubs
+            .AsNoTracking()
             .Where(mc => mc.ClubId == clubId)
             .Select(mc => mc.MatchId)
             .Distinct()
             .ToListAsync(ct);
     }
 
+    public async Task<List<long>> GetMatchIdsExclusiveToClubAsync(long clubId, IReadOnlyCollection<long> otherClubIds, CancellationToken ct)
+    {
+        return await _db.MatchClubs
+            .AsNoTracking()
+            .Where(mc => mc.ClubId == clubId
+                && !_db.MatchClubs.Any(o => o.MatchId == mc.MatchId && otherClubIds.Contains(o.ClubId)))
+            .Select(mc => mc.MatchId)
+            .Distinct()
+            .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Remove partidas e tudo que depende delas, numa transação. Ordem: dependentes (OverallStats da partida,
+    /// links de gol, MatchPlayers, MatchClubs) -> Matches -> snapshots de atributos (PlayerMatchStats) que
+    /// ficaram sem nenhuma referência. Os snapshots são compartilhados entre partidas (e apontados por
+    /// Players.PlayerMatchStatsId), então só os órfãos são apagados (FKs são Restrict).
+    /// Atenção: partidas removidas são reimportadas no próximo ciclo enquanto ainda estiverem nas últimas 20
+    /// partidas devolvidas pela EA.
+    /// </summary>
     public async Task DeleteMatchesAsync(IEnumerable<long> matchIds, CancellationToken ct)
     {
-        var ids = matchIds.ToList();
+        var ids = matchIds.Distinct().ToList();
+        if (ids.Count == 0) return;
+
         var strategy = _db.Database.CreateExecutionStrategy();
 
         await strategy.ExecuteAsync(async () =>
         {
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            try
-            {
-                var statsIds = await _db.MatchPlayers
-                    .Where(mp => ids.Contains(mp.MatchId))
-                    .Select(mp => mp.PlayerMatchStatsEntityId)
-                    .Where(id => id != null)
-                    .Cast<long>()
-                    .Distinct()
-                    .ToListAsync(ct);
 
-                await _db.PlayerMatchStats.Where(pms => statsIds.Contains(pms.Id)).ExecuteDeleteAsync(ct);
-                await _db.MatchPlayers.Where(mp => ids.Contains(mp.MatchId)).ExecuteDeleteAsync(ct);
-                await _db.MatchClubs.Where(mc => ids.Contains(mc.MatchId)).ExecuteDeleteAsync(ct);
-                await _db.Matches.Where(m => ids.Contains(m.MatchId)).ExecuteDeleteAsync(ct);
+            var statsIds = await _db.MatchPlayers
+                .Where(mp => ids.Contains(mp.MatchId))
+                .Select(mp => mp.PlayerMatchStatsEntityId)
+                .Distinct()
+                .ToListAsync(ct);
 
-                await tx.CommitAsync(ct);
-            }
-            catch
+            // OverallStats.MatchId não tem FK; sem isso ficariam linhas órfãs apontando para a partida
+            await _db.OverallStats.Where(o => o.MatchId != null && ids.Contains(o.MatchId.Value)).ExecuteDeleteAsync(ct);
+            await _db.MatchGoalLinks.Where(g => ids.Contains(g.MatchId)).ExecuteDeleteAsync(ct);
+            await _db.MatchPlayers.Where(mp => ids.Contains(mp.MatchId)).ExecuteDeleteAsync(ct);
+            await _db.MatchClubs.Where(mc => ids.Contains(mc.MatchId)).ExecuteDeleteAsync(ct);
+            await _db.Matches.Where(m => ids.Contains(m.MatchId)).ExecuteDeleteAsync(ct);
+
+            if (statsIds.Count > 0)
             {
-                await tx.RollbackAsync(ct);
-                throw;
+                await _db.PlayerMatchStats
+                    .Where(s => statsIds.Contains(s.Id)
+                        && !_db.MatchPlayers.Any(mp => mp.PlayerMatchStatsEntityId == s.Id)
+                        && !_db.Players.Any(pl => pl.PlayerMatchStatsId == s.Id))
+                    .ExecuteDeleteAsync(ct);
             }
+
+            await tx.CommitAsync(ct);
         });
     }
 
@@ -165,7 +189,7 @@ public class MatchRepository : IMatchRepository
     {
         return await _db.Matches
             .AsNoTracking()
-            .OrderByDescending(m => m.Timestamp)
+            .OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId)
             .Take(count)
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
@@ -175,12 +199,13 @@ public class MatchRepository : IMatchRepository
     public async Task<List<MatchEntity>> GetMatchesForTrendsAsync(long clubId, int last, DateTime? since, DateTime? until, CancellationToken ct)
     {
         return await _db.Matches
+            .AsNoTracking()
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
             .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
             .Where(m => !since.HasValue || m.Timestamp >= since.Value)
             .Where(m => !until.HasValue || m.Timestamp <= until.Value)
-            .OrderByDescending(m => m.Timestamp)
+            .OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId)
             .Take(last > 0 ? last : 30)
             .ToListAsync(ct);
     }

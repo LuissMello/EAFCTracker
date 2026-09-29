@@ -4,8 +4,11 @@ using EAFCMatchTracker.Domain.Models;
 using EAFCMatchTracker.Infrastructure.Data;
 using EAFCMatchTracker.Infrastructure.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 
 namespace EAFCMatchTracker.Application.Services;
@@ -16,15 +19,65 @@ public class ClubMatchService : IClubMatchService
     private readonly IConfiguration _config;
     private readonly EAFCContext _db;
     private readonly ILogger<ClubMatchService> _logger;
+    private readonly IMemoryCache _cache;
     private readonly JsonSerializerOptions _jsonOpts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
+    // As chamadas por partida à EA (overall/membros/playoffs/divisão) são memorizadas por clube para que um
+    // ciclo não repita as mesmas 4-6 chamadas a cada partida nova. Divisão/membros/playoffs mudam devagar (10 min);
+    // o overall muda a cada jogo e é um "retrato" por partida, então usa TTL curto (2 min) — só o suficiente
+    // para cobrir um ciclo inteiro.
+    private static readonly object MemoLock = new();
+    private static readonly TimeSpan DefaultSlowTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan DefaultOverallTtl = TimeSpan.FromMinutes(2);
 
-    public ClubMatchService(IEAHttpClient backend, IConfiguration config, EAFCContext db, ILogger<ClubMatchService> logger)
+    private sealed record DivisionResult(int Value);
+
+    public ClubMatchService(IEAHttpClient backend, IConfiguration config, EAFCContext db, IMemoryCache cache, ILogger<ClubMatchService> logger)
     {
         _eaHttpClient = backend;
         _config = config;
         _db = db;
+        _cache = cache;
         _logger = logger;
+    }
+
+    private TimeSpan SlowTtl =>
+        int.TryParse(_config["EAFCSettings:EaCacheMinutes"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var m) && m >= 0
+            ? TimeSpan.FromMinutes(m)
+            : DefaultSlowTtl;
+
+    private TimeSpan OverallTtl => SlowTtl < DefaultOverallTtl ? SlowTtl : DefaultOverallTtl;
+
+    /// <summary>
+    /// Memoiza (por chave) o resultado de uma chamada à EA, compartilhando também chamadas em andamento.
+    /// Resultados nulos e falhas NÃO ficam em cache (a próxima tentativa refaz a chamada).
+    /// </summary>
+    private async Task<T?> MemoizeAsync<T>(string key, TimeSpan ttl, Func<Task<T?>> factory) where T : class
+    {
+        if (ttl <= TimeSpan.Zero) return await factory();
+
+        Lazy<Task<T?>> lazy;
+        lock (MemoLock)
+        {
+            if (!_cache.TryGetValue(key, out Lazy<Task<T?>>? cached) || cached is null)
+            {
+                cached = new Lazy<Task<T?>>(factory);
+                _cache.Set(key, cached, ttl);
+            }
+            lazy = cached;
+        }
+
+        try
+        {
+            var result = await lazy.Value;
+            if (result is null) _cache.Remove(key);
+            return result;
+        }
+        catch
+        {
+            _cache.Remove(key);
+            throw;
+        }
     }
 
     public async Task FetchAndStoreMatchesAsync(string clubId, string matchType, CancellationToken ct)
@@ -63,10 +116,33 @@ public class ClubMatchService : IClubMatchService
 
         _logger.LogInformation("Found {NewMatchesCount} new matches for club {ClubId} matchType {MatchType}", newMatches.Count, clubId, matchType);
 
+        var gameVersionId = await ResolveGameVersionIdAsync(clubId, ct);
+
         foreach (var match in newMatches)
         {
-            await SaveMatchAsync(match, matchType, ct);
+            await SaveMatchAsync(match, matchType, gameVersionId, ct);
         }
+    }
+
+    /// <summary>
+    /// Edição do jogo das partidas buscadas para este clube: a do clube rastreado; se não houver (clube sem
+    /// edição definida), a edição corrente; se também não houver, null.
+    /// </summary>
+    private async Task<int?> ResolveGameVersionIdAsync(string clubIdText, CancellationToken ct)
+    {
+        if (long.TryParse(clubIdText, out var clubId))
+        {
+            var tracked = await _db.TrackedClubs.AsNoTracking()
+                .Where(c => c.ClubId == clubId)
+                .Select(c => c.GameVersionId)
+                .FirstOrDefaultAsync(ct);
+            if (tracked.HasValue) return tracked;
+        }
+
+        return await _db.GameVersions.AsNoTracking()
+            .Where(v => v.IsCurrent)
+            .Select(v => (int?)v.Id)
+            .FirstOrDefaultAsync(ct);
     }
 
     private async Task<List<Match>> FetchMatches(string clubId, string matchType, CancellationToken ct = default)
@@ -132,8 +208,8 @@ public class ClubMatchService : IClubMatchService
 
         var payload = JsonSerializer.Deserialize<List<SearchClubResult>>(json, _jsonOpts) ?? new();
 
-        var byId = payload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
-        var pick = byId ?? payload.FirstOrDefault();
+        // Exige o mesmo clubId: a busca por nome pode devolver clubes homônimos/parecidos
+        var pick = payload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
         if (pick == null) return null;
 
         var division = ToNullableInt(pick.currentDivision);
@@ -148,8 +224,7 @@ public class ClubMatchService : IClubMatchService
             if (allTimeJson is not null)
             {
                 var allTimePayload = JsonSerializer.Deserialize<List<SearchClubResult>>(allTimeJson, _jsonOpts) ?? new();
-                var allTimeById = allTimePayload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
-                var allTimePick = allTimeById ?? allTimePayload.FirstOrDefault();
+                var allTimePick = allTimePayload.FirstOrDefault(x => long.TryParse(x.clubId, out var id) && id == clubId);
                 if (allTimePick != null)
                     return ToNullableInt(allTimePick.currentDivision);
             }
@@ -184,7 +259,7 @@ public class ClubMatchService : IClubMatchService
 
         List<Domain.Models.OverallStats>? list = null;
         try { list = JsonSerializer.Deserialize<List<Domain.Models.OverallStats>>(json, _jsonOpts); }
-        catch
+        catch (JsonException)
         {
             var one = JsonSerializer.Deserialize<Domain.Models.OverallStats>(json, _jsonOpts);
             if (one != null) list = new List<Domain.Models.OverallStats> { one };
@@ -205,7 +280,7 @@ public class ClubMatchService : IClubMatchService
 
         List<Domain.Models.PlayoffAchievement>? items = null;
         try { items = JsonSerializer.Deserialize<List<Domain.Models.PlayoffAchievement>>(json, _jsonOpts); }
-        catch
+        catch (JsonException)
         {
             var one = JsonSerializer.Deserialize<Domain.Models.PlayoffAchievement>(json, _jsonOpts);
             if (one != null) items = new List<Domain.Models.PlayoffAchievement> { one };
@@ -223,20 +298,24 @@ public class ClubMatchService : IClubMatchService
 
     private static int? ToNullableInt(string? s) => int.TryParse(s, out var v) ? v : (int?)null;
 
-    private async Task SaveMatchAsync(Match match, string matchType, CancellationToken ct = default)
+    private async Task SaveMatchAsync(Match match, string matchType, int? gameVersionId, CancellationToken ct = default)
     {
         if (match == null || string.IsNullOrWhiteSpace(match.MatchId))
             throw new ArgumentException("Match inválido.");
 
         long matchId = Convert.ToInt64(match.MatchId);
 
-        var preFetchedDivisions = new Dictionary<long, int?>();
-        var preFetchedMembers = new Dictionary<long, MembersStatsResponse?>();
-        var preFetchedOverall = new Dictionary<long, Domain.Models.OverallStats?>();
-        var preFetchedPlayoffs = new Dictionary<long, List<Domain.Models.PlayoffAchievement>?>();
+        // Escritas concorrentes (continuações do Task.WhenAll): dicionários thread-safe
+        var preFetchedDivisions = new ConcurrentDictionary<long, int?>();
+        var preFetchedMembers = new ConcurrentDictionary<long, MembersStatsResponse?>();
+        var preFetchedOverall = new ConcurrentDictionary<long, Domain.Models.OverallStats?>();
+        var preFetchedPlayoffs = new ConcurrentDictionary<long, List<Domain.Models.PlayoffAchievement>?>();
 
         if (match.Clubs != null && match.Clubs.Count > 0)
         {
+            var slowTtl = SlowTtl;
+            var overallTtl = OverallTtl;
+
             var tasks = match.Clubs.Select(async kv =>
             {
                 var cid = long.Parse(kv.Key);
@@ -245,15 +324,42 @@ public class ClubMatchService : IClubMatchService
                 int? div = null;
                 if (!string.IsNullOrWhiteSpace(name))
                 {
-                    try { div = await FetchCurrentDivisionByNameAsync(name!, cid, ct); } catch { }
+                    try
+                    {
+                        var d = await MemoizeAsync($"ea:div:{cid}:{name!.ToUpperInvariant()}", slowTtl, async () =>
+                        {
+                            var v = await FetchCurrentDivisionByNameAsync(name!, cid, ct);
+                            return v.HasValue ? new DivisionResult(v.Value) : null;
+                        });
+                        div = d?.Value;
+                    }
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        _logger.LogWarning(ex, "Falha ao buscar divisão atual do clube {ClubId} (partida {MatchId})", cid, matchId);
+                    }
                 }
                 preFetchedDivisions[cid] = div;
 
-                try { preFetchedMembers[cid] = await FetchMembersStatsAsync(cid, ct); } catch { preFetchedMembers[cid] = null; }
+                try { preFetchedMembers[cid] = await MemoizeAsync($"ea:members:{cid}", slowTtl, () => FetchMembersStatsAsync(cid, ct)); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning(ex, "Falha ao buscar membros do clube {ClubId} (partida {MatchId})", cid, matchId);
+                    preFetchedMembers[cid] = null;
+                }
 
-                try { preFetchedOverall[cid] = await FetchOverallStatsAsync(cid, ct); } catch { preFetchedOverall[cid] = null; }
+                try { preFetchedOverall[cid] = await MemoizeAsync($"ea:overall:{cid}", overallTtl, () => FetchOverallStatsAsync(cid, ct)); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning(ex, "Falha ao buscar overall stats do clube {ClubId} (partida {MatchId})", cid, matchId);
+                    preFetchedOverall[cid] = null;
+                }
 
-                try { preFetchedPlayoffs[cid] = await FetchPlayoffAchievementsAsync(cid, ct); } catch { preFetchedPlayoffs[cid] = null; }
+                try { preFetchedPlayoffs[cid] = await MemoizeAsync($"ea:playoffs:{cid}", slowTtl, () => FetchPlayoffAchievementsAsync(cid, ct)); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning(ex, "Falha ao buscar playoffs do clube {ClubId} (partida {MatchId})", cid, matchId);
+                    preFetchedPlayoffs[cid] = null;
+                }
             });
 
             await Task.WhenAll(tasks);
@@ -269,6 +375,7 @@ public class ClubMatchService : IClubMatchService
                 MatchId = matchId,
                 MatchType = matchType == "leagueMatch" ? Domain.Entities.MatchType.League : Domain.Entities.MatchType.Playoff,
                 Timestamp = DateTimeOffset.FromUnixTimeSeconds(match.Timestamp).UtcDateTime,
+                GameVersionId = gameVersionId,
             };
             await _db.Matches.AddAsync(matchEntity, ct);
 
@@ -334,7 +441,7 @@ public class ClubMatchService : IClubMatchService
                     var div = preFetchedDivisions.TryGetValue(clubId, out var cd) ? cd : null;
                     if (overall != null)
                     {
-                        var entity = MapToEntity(clubId, matchId, overall, div);
+                        var entity = MapToEntity(clubId, matchId, overall, div, gameVersionId);
                         await _db.OverallStats.AddAsync(entity, ct);
                         await _db.SaveChangesAsync(ct);
                     }
@@ -342,7 +449,7 @@ public class ClubMatchService : IClubMatchService
                     var playoffs = preFetchedPlayoffs.TryGetValue(clubId, out var pl) ? pl : null;
                     if (playoffs != null && playoffs.Count > 0)
                     {
-                        await UpsertPlayoffAchievementsAsync(clubId, playoffs, ct);
+                        await UpsertPlayoffAchievementsAsync(clubId, playoffs, gameVersionId, ct);
                     }
 
                     await _db.MatchClubs.AddAsync(mc, ct);
@@ -587,8 +694,17 @@ public class ClubMatchService : IClubMatchService
     private static short SafeShort(object value)
         => short.TryParse(Convert.ToString(value), out var s) ? s : (short)0;
 
+    // Cultura invariante: a EA envia o ponto como separador decimal ("7.5"); com pt-BR (padrão do app) o ponto
+    // seria separador de milhar e "7.5" viraria 75. Para os valores com 2 casas ("8.50") o resultado final
+    // (após NormalizeRating) é idêntico ao de antes. AllowThousands mantém o comportamento para "8,50" -> 850 -> 8.5.
     private static double SafeDouble(object value)
-        => double.TryParse(Convert.ToString(value), out var d) ? d : 0.0;
+        => double.TryParse(
+               Convert.ToString(value, CultureInfo.InvariantCulture),
+               NumberStyles.Float | NumberStyles.AllowThousands,
+               CultureInfo.InvariantCulture,
+               out var d)
+            ? d
+            : 0.0;
 
     private static double NormalizeRating(double rating)
     {
@@ -599,9 +715,9 @@ public class ClubMatchService : IClubMatchService
         return Math.Round(scaled, 2, MidpointRounding.AwayFromZero);
     }
 
-    private static OverallStatsEntity MapToEntity(long clubId, long matchId, Domain.Models.OverallStats src, int? div)
+    private static OverallStatsEntity MapToEntity(long clubId, long matchId, Domain.Models.OverallStats src, int? div, int? gameVersionId)
     {
-        var o = new OverallStatsEntity { ClubId = clubId, MatchId = matchId };
+        var o = new OverallStatsEntity { ClubId = clubId, MatchId = matchId, GameVersionId = gameVersionId };
         o.BestDivision = src.BestDivision;
         o.BestFinishGroup = src.BestFinishGroup;
         o.GamesPlayed = src.GamesPlayed;
@@ -656,13 +772,16 @@ public class ClubMatchService : IClubMatchService
             .ToDictionaryAsync(s => s.PlayerEntityId, ct);
     }
 
-    private async Task UpsertPlayoffAchievementsAsync(long clubId, IEnumerable<Domain.Models.PlayoffAchievement> items, CancellationToken ct)
+    private async Task UpsertPlayoffAchievementsAsync(long clubId, IEnumerable<Domain.Models.PlayoffAchievement> items, int? gameVersionId, CancellationToken ct)
     {
         var existingAchievements = await _db.PlayoffAchievements
                                 .Where(p => p.ClubId == clubId)
                                 .ToListAsync(ct);
 
-        var map = existingAchievements.ToDictionary(p => p.SeasonId, StringComparer.OrdinalIgnoreCase);
+        // Tolerante a duplicatas (o índice único é (ClubId, SeasonId), sensível a maiúsculas no banco)
+        var map = existingAchievements
+            .GroupBy(p => p.SeasonId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         var utcNow = DateTime.UtcNow;
 
@@ -673,11 +792,13 @@ public class ClubMatchService : IClubMatchService
 
             if (map.TryGetValue(it.SeasonId, out var row))
             {
+                // GameVersionId de linhas existentes nunca é sobrescrito
                 row.SeasonName = it.SeasonName;
                 row.BestDivision = it.BestDivision;
                 row.BestFinishGroup = it.BestFinishGroup;
                 row.UpdatedAtUtc = utcNow;
-                _db.PlayoffAchievements.Update(row);
+                // Sem _db.Update(row): a linha já está rastreada (carregada ou adicionada neste payload) e
+                // Update() transformaria uma entidade recém-adicionada em UPDATE de linha inexistente.
             }
             else
             {
@@ -688,10 +809,12 @@ public class ClubMatchService : IClubMatchService
                     SeasonName = it.SeasonName,
                     BestDivision = it.BestDivision,
                     BestFinishGroup = it.BestFinishGroup,
+                    GameVersionId = gameVersionId,
                     RetrievedAtUtc = utcNow,
                     UpdatedAtUtc = utcNow
                 };
                 await _db.PlayoffAchievements.AddAsync(entity, ct);
+                map[it.SeasonId] = entity; // mesma temporada repetida no payload não gera INSERT duplicado
             }
         }
 

@@ -136,6 +136,7 @@ namespace EAFCMatchTracker.Application.Dtos
                         TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
                         TotalRedCards = g.Sum(p => p.Redcards),
                         TotalSaves = g.Sum(p => p.Saves),
+                        HasGoalkeeperAppearance = g.Any(p => p.Pos == "GK" || p.Cleansheetsgk > 0 || p.Saves > 0),
                         TotalMom = g.Count(p => p.Mom),
                         TotalGoalsConceded = g.Sum(p => p.Goalsconceded),
 
@@ -482,6 +483,7 @@ namespace EAFCMatchTracker.Application.Dtos
                         TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
                         TotalRedCards = g.Sum(p => p.Redcards),
                         TotalSaves = g.Sum(p => p.Saves),
+                        HasGoalkeeperAppearance = g.Any(p => p.Pos == "GK" || p.Cleansheetsgk > 0 || p.Saves > 0),
                         TotalMom = g.Count(p => p.Mom),
                         TotalGoalsConceded = g.Sum(p => p.Goalsconceded),
 

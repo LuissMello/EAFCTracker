@@ -5,6 +5,9 @@ public sealed class MatchResultDto
     public long MatchId { get; set; }
     public DateTime Timestamp { get; set; }
 
+    /// <summary>Edição do jogo da partida (ex.: 26). Nulo se desconhecida.</summary>
+    public int? GameVersion { get; set; }
+
     public string ClubAName { get; set; } = default!;
     public short ClubAGoals { get; set; }
     public short ClubARedCards { get; set; }  // mantido por retrocompatibilidade

@@ -19,9 +19,19 @@ public class PlayerService : IPlayerService
         _logger = logger;
     }
 
-    public async Task<PlayerEntity?> GetByIdAsync(long playerId, CancellationToken ct)
+    public async Task<PlayerDto?> GetByIdAsync(long playerId, CancellationToken ct)
     {
-        return await _playerRepository.GetByPlayerIdAsync(playerId, ct);
+        var player = await _playerRepository.GetByPlayerIdAsync(playerId, ct);
+        if (player is null) return null;
+
+        return new PlayerDto
+        {
+            Id = player.Id,
+            PlayerId = player.PlayerId,
+            ClubId = player.ClubId,
+            Playername = player.Playername,
+            PlayerMatchStatsId = player.PlayerMatchStatsId
+        };
     }
 
     public async Task<PlayerProfileDto> GetProfileAsync(long playerEntityId, CancellationToken ct)

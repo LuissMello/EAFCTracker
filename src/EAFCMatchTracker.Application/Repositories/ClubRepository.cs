@@ -51,7 +51,12 @@ public class ClubRepository : IClubRepository
 
     public async Task<OverallStatsEntity?> GetOverallStatsByClubIdAsync(long clubId, CancellationToken ct)
     {
-        return await _db.OverallStats.FirstOrDefaultAsync(o => o.ClubId == clubId, ct);
+        // Determinístico: a linha mais recente do clube
+        return await _db.OverallStats
+            .Where(o => o.ClubId == clubId)
+            .OrderByDescending(o => o.UpdatedAtUtc)
+            .ThenByDescending(o => o.Id)
+            .FirstOrDefaultAsync(ct);
     }
 
     public async Task<List<OverallStatsEntity>> GetAllOverallStatsByClubIdAsync(long clubId, CancellationToken ct)
@@ -65,6 +70,25 @@ public class ClubRepository : IClubRepository
             .AsNoTracking()
             .Where(o => ids.Contains(o.ClubId))
             .ToListAsync(ct);
+    }
+
+    public async Task<Dictionary<long, OverallStatsEntity>> GetLatestOverallStatsByClubIdsAsync(List<long> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0) return new Dictionary<long, OverallStatsEntity>();
+
+        var rows = await _db.OverallStats
+            .Where(o => ids.Contains(o.ClubId)
+                && o.Id == _db.OverallStats
+                    .Where(x => x.ClubId == o.ClubId)
+                    .OrderByDescending(x => x.UpdatedAtUtc)
+                    .ThenByDescending(x => x.Id)
+                    .Select(x => x.Id)
+                    .FirstOrDefault())
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => r.ClubId)
+            .ToDictionary(g => g.Key, g => g.First());
     }
 
     public async Task<List<PlayoffAchievementEntity>> GetPlayoffAchievementsByClubIdAsync(long clubId, CancellationToken ct)

@@ -108,17 +108,24 @@ public class TrendsService : ITrendsService
         };
     }
 
-    public async Task<object> GetTopScorersAsync(long clubId, DateTime? since, DateTime? until, int limit, CancellationToken ct)
+    public async Task<object> GetTopScorersAsync(long clubId, DateTime? since, DateTime? until, int last, int limit, CancellationToken ct)
     {
         _logger.LogInformation("TrendsService.GetTopScorersAsync ClubId={ClubId}", clubId);
 
-        var q = _db.MatchPlayers
-            .Include(mp => mp.Match)
-            .Include(mp => mp.Player)
-            .Where(mp => mp.Player.ClubId == clubId);
+        // Mesmas partidas, ordem e limites de GetMatchesForTrendsAsync.
+        var matchIds = await _db.Matches.AsNoTracking()
+            .Where(m => m.Clubs.Any(c => c.ClubId == clubId))
+            .Where(m => !since.HasValue || m.Timestamp >= since.Value)
+            .Where(m => !until.HasValue || m.Timestamp <= until.Value)
+            .OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId)
+            .Take(last > 0 ? last : 30)
+            .Select(m => m.MatchId)
+            .ToListAsync(ct);
 
-        if (since.HasValue) q = q.Where(mp => mp.Match.Timestamp >= since.Value);
-        if (until.HasValue) q = q.Where(mp => mp.Match.Timestamp <= until.Value);
+        // Somente leitura e agregada (GroupBy): sem tracking e sem Include.
+        var q = _db.MatchPlayers
+            .AsNoTracking()
+            .Where(mp => mp.ClubId == clubId && matchIds.Contains(mp.MatchId));
 
         return await q
             .GroupBy(mp => mp.PlayerEntityId)
@@ -137,6 +144,7 @@ public class TrendsService : ITrendsService
             .OrderByDescending(x => x.Goals)
             .ThenByDescending(x => x.Assists)
             .ThenByDescending(x => x.AvgRating)
+            .ThenBy(x => x.PlayerEntityId)
             .Take(limit > 0 ? limit : 10)
             .ToListAsync(ct);
     }

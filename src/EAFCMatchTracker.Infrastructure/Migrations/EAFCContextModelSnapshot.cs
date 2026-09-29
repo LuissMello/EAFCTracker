@@ -22,6 +22,88 @@ namespace EAFCMatchTracker.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.AppSettingEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("AppSettings");
+
+                    b.HasData(
+                        new
+                        {
+                            Key = "fetch_interval_minutes",
+                            Value = "60"
+                        },
+                        new
+                        {
+                            Key = "max_parallel_fetches",
+                            Value = "4"
+                        });
+                });
+
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.GameVersionEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTimeOffset?>("StartsAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsCurrent")
+                        .IsUnique()
+                        .HasFilter("\"IsCurrent\" = true");
+
+                    b.HasIndex("Version")
+                        .IsUnique();
+
+                    b.ToTable("GameVersions");
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            IsCurrent = false,
+                            Name = "FC25",
+                            StartsAt = new DateTimeOffset(new DateTime(2024, 9, 27, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            Version = 25
+                        },
+                        new
+                        {
+                            Id = 2,
+                            IsCurrent = false,
+                            Name = "FC26",
+                            StartsAt = new DateTimeOffset(new DateTime(2025, 9, 26, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            Version = 26
+                        },
+                        new
+                        {
+                            Id = 3,
+                            IsCurrent = true,
+                            Name = "FC27",
+                            Version = 27
+                        });
+                });
+
             modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.MatchClubEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -80,6 +162,8 @@ namespace EAFCMatchTracker.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ClubId", "MatchId");
+
                     b.HasIndex("MatchId", "ClubId")
                         .IsUnique();
 
@@ -94,6 +178,9 @@ namespace EAFCMatchTracker.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("MatchId"));
 
+                    b.Property<int?>("GameVersionId")
+                        .HasColumnType("integer");
+
                     b.Property<int>("MatchType")
                         .HasColumnType("integer");
 
@@ -101,6 +188,10 @@ namespace EAFCMatchTracker.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("MatchId");
+
+                    b.HasIndex("GameVersionId");
+
+                    b.HasIndex("Timestamp");
 
                     b.ToTable("Matches");
                 });
@@ -325,8 +416,8 @@ namespace EAFCMatchTracker.Migrations
                     b.Property<int?>("CurrentDivision")
                         .HasColumnType("integer");
 
-                    b.Property<long?>("MatchId")
-                        .HasColumnType("bigint");
+                    b.Property<int?>("GameVersionId")
+                        .HasColumnType("integer");
 
                     b.Property<string>("GamesPlayed")
                         .HasColumnType("text");
@@ -345,6 +436,9 @@ namespace EAFCMatchTracker.Migrations
 
                     b.Property<string>("Losses")
                         .HasColumnType("text");
+
+                    b.Property<long?>("MatchId")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Promotions")
                         .HasColumnType("text");
@@ -376,6 +470,10 @@ namespace EAFCMatchTracker.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ClubId");
+
+                    b.HasIndex("GameVersionId");
+
+                    b.HasIndex("ClubId", "UpdatedAtUtc");
 
                     b.ToTable("OverallStats");
                 });
@@ -548,6 +646,9 @@ namespace EAFCMatchTracker.Migrations
                     b.Property<long>("ClubId")
                         .HasColumnType("bigint");
 
+                    b.Property<int?>("GameVersionId")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime>("RetrievedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -564,6 +665,8 @@ namespace EAFCMatchTracker.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ClubId");
+
+                    b.HasIndex("GameVersionId");
 
                     b.HasIndex("ClubId", "SeasonId")
                         .IsUnique();
@@ -588,6 +691,49 @@ namespace EAFCMatchTracker.Migrations
                         {
                             Id = 1,
                             LastFetchedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                        });
+                });
+
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.TrackedClubEntity", b =>
+                {
+                    b.Property<long>("ClubId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("AddedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("GameVersionId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .HasColumnType("text");
+
+                    b.HasKey("ClubId");
+
+                    b.HasIndex("GameVersionId");
+
+                    b.ToTable("TrackedClubs");
+
+                    b.HasData(
+                        new
+                        {
+                            ClubId = 355651L,
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                        },
+                        new
+                        {
+                            ClubId = 352016L,
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                        },
+                        new
+                        {
+                            ClubId = 349613L,
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
+                        },
+                        new
+                        {
+                            ClubId = 312721L,
+                            AddedAt = new DateTimeOffset(new DateTime(1, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0))
                         });
                 });
 
@@ -696,6 +842,14 @@ namespace EAFCMatchTracker.Migrations
                     b.Navigation("Match");
                 });
 
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.MatchEntity", b =>
+                {
+                    b.HasOne("EAFCMatchTracker.Domain.Entities.GameVersionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GameVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.MatchGoalLinkEntity", b =>
                 {
                     b.HasOne("EAFCMatchTracker.Domain.Entities.PlayerEntity", "Assist")
@@ -756,6 +910,14 @@ namespace EAFCMatchTracker.Migrations
                     b.Navigation("PlayerMatchStats");
                 });
 
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.OverallStatsEntity", b =>
+                {
+                    b.HasOne("EAFCMatchTracker.Domain.Entities.GameVersionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GameVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.PlayerEntity", b =>
                 {
                     b.HasOne("EAFCMatchTracker.Domain.Entities.PlayerMatchStatsEntity", "PlayerMatchStats")
@@ -775,6 +937,22 @@ namespace EAFCMatchTracker.Migrations
                         .IsRequired();
 
                     b.Navigation("Player");
+                });
+
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.PlayoffAchievementEntity", b =>
+                {
+                    b.HasOne("EAFCMatchTracker.Domain.Entities.GameVersionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GameVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.TrackedClubEntity", b =>
+                {
+                    b.HasOne("EAFCMatchTracker.Domain.Entities.GameVersionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GameVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.MatchEntity", b =>

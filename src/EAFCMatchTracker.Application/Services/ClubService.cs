@@ -11,32 +11,77 @@ namespace EAFCMatchTracker.Application.Services;
 public class ClubService : IClubService
 {
     private readonly IClubRepository _clubRepository;
-    private readonly IConfiguration _config;
     private readonly ILogger<ClubService> _logger;
     private readonly EAFCContext _db;
 
-    public ClubService(IClubRepository clubRepository, IConfiguration config, ILogger<ClubService> logger, EAFCContext db)
+    public ClubService(IClubRepository clubRepository, ILogger<ClubService> logger, EAFCContext db)
     {
         _clubRepository = clubRepository;
-        _config = config;
         _logger = logger;
         _db = db;
     }
 
-    public async Task<List<ClubListItemDto>> GetAllAsync(CancellationToken ct)
+    public async Task<List<ClubListItemDto>> GetAllAsync(int? gameVersion, CancellationToken ct)
     {
-        _logger.LogInformation("ClubService.GetAllAsync called");
-        var ids = ParseClubIdsFromConfig(_config);
-        if (ids.Count == 0) return new List<ClubListItemDto>();
+        _logger.LogInformation("ClubService.GetAllAsync called (gameVersion={GameVersion})", gameVersion);
+        var tracked = await _db.TrackedClubs.AsNoTracking()
+            .Select(c => new { c.ClubId, c.Name, c.GameVersionId })
+            .ToListAsync(ct);
+        if (tracked.Count == 0) return new List<ClubListItemDto>();
+
+        var versions = await _db.GameVersions.AsNoTracking().ToListAsync(ct);
+        var versionNumberById = versions.ToDictionary(v => v.Id, v => v.Version);
+
+        var ids = tracked.Select(c => c.ClubId).ToList();
+
+        if (gameVersion.HasValue)
+        {
+            var versionId = versions.FirstOrDefault(v => v.Version == gameVersion.Value)?.Id;
+            if (versionId is null) return new List<ClubListItemDto>();
+
+            // Clubes rastreados nessa edição OU que já têm partidas nela (o clube pode ter sido movido de edição)
+            var trackedIds = ids;
+            var withMatches = await _db.MatchClubs.AsNoTracking()
+                .Where(mc => trackedIds.Contains(mc.ClubId) && mc.Match.GameVersionId == versionId)
+                .Select(mc => mc.ClubId)
+                .Distinct()
+                .ToListAsync(ct);
+
+            ids = tracked.Where(c => c.GameVersionId == versionId).Select(c => c.ClubId)
+                .Union(withMatches)
+                .ToList();
+
+            if (ids.Count == 0) return new List<ClubListItemDto>();
+        }
+
+        var versionByClub = tracked.ToDictionary(
+            c => c.ClubId,
+            c => c.GameVersionId.HasValue && versionNumberById.TryGetValue(c.GameVersionId.Value, out var n) ? (int?)n : null);
 
         var summaries = await _clubRepository.GetClubSummariesByIdsAsync(ids, ct);
 
-        return summaries.Select(c => new ClubListItemDto
+        var result = summaries.Select(c => new ClubListItemDto
         {
             ClubId = c.ClubId,
             Name = c.Name ?? $"Clube {c.ClubId}",
-            CrestAssetId = c.Team.ToString()
+            CrestAssetId = c.Team.ToString(),
+            GameVersion = versionByClub.TryGetValue(c.ClubId, out var gv) ? gv : null
         }).ToList();
+
+        // Clube recém-rastreado ainda sem partidas no banco: aparece na lista (com o nome do cadastro) em vez de sumir
+        var listed = result.Select(r => r.ClubId).ToHashSet();
+        foreach (var t in tracked.Where(t => ids.Contains(t.ClubId) && !listed.Contains(t.ClubId)))
+        {
+            result.Add(new ClubListItemDto
+            {
+                ClubId = t.ClubId,
+                Name = string.IsNullOrWhiteSpace(t.Name) ? $"Clube {t.ClubId}" : t.Name!,
+                CrestAssetId = null,
+                GameVersion = versionByClub.TryGetValue(t.ClubId, out var tv) ? tv : null
+            });
+        }
+
+        return result;
     }
 
     public async Task<PagedResult<ClubOverallStatsDto>> GetOverallPagedAsync(long clubId, int page, int pageSize, CancellationToken ct)
@@ -48,7 +93,7 @@ public class ClubService : IClubService
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
 
         var entities = await q
-            .OrderByDescending(o => o.UpdatedAtUtc)
+            .OrderByDescending(o => o.UpdatedAtUtc).ThenByDescending(o => o.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(ct);
@@ -71,7 +116,7 @@ public class ClubService : IClubService
 
         var matchIdsQ = _db.MatchClubs.AsNoTracking()
             .Where(mc => mc.ClubId == clubId)
-            .OrderByDescending(mc => mc.Date)
+            .OrderByDescending(mc => mc.Date).ThenByDescending(mc => mc.MatchId)
             .Select(mc => mc.MatchId);
 
         var totalCount = await matchIdsQ.CountAsync(ct);
@@ -107,11 +152,11 @@ public class ClubService : IClubService
 
         var exactByMatchAndClub = exactOverall
             .GroupBy(os => (os.MatchId!.Value, os.ClubId))
-            .ToDictionary(g => g.Key, g => g.First());
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).First());
 
         var fallbackByClub = fallbackOverall
             .GroupBy(os => os.ClubId)
-            .ToDictionary(g => g.Key, g => g.First());
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.UpdatedAtUtc).ThenByDescending(x => x.Id).First());
 
         var items = new List<MatchWithOverallStatsDto>();
 
@@ -167,6 +212,7 @@ public class ClubService : IClubService
         // Try exact record first (match-specific snapshot)
         var exact = await _db.OverallStats.AsNoTracking()
             .Where(os => os.ClubId == clubId && os.MatchId == matchId)
+            .OrderByDescending(os => os.UpdatedAtUtc).ThenByDescending(os => os.Id)
             .FirstOrDefaultAsync(ct);
 
         if (exact != null)
@@ -175,7 +221,7 @@ public class ClubService : IClubService
         // Fallback: legacy null-MatchId record (single historical record)
         var fallback = await _db.OverallStats.AsNoTracking()
             .Where(os => os.ClubId == clubId && os.MatchId == null)
-            .OrderByDescending(os => os.UpdatedAtUtc)
+            .OrderByDescending(os => os.UpdatedAtUtc).ThenByDescending(os => os.Id)
             .FirstOrDefaultAsync(ct);
 
         return fallback == null ? null : StatsAggregator.BuildClubsOverall([fallback]).FirstOrDefault();
@@ -197,18 +243,5 @@ public class ClubService : IClubService
         if (exact.TryGetValue((matchId, clubId), out var e)) return e;
         fallback.TryGetValue(clubId, out var f);
         return f;
-    }
-
-    private static List<long> ParseClubIdsFromConfig(IConfiguration config)
-    {
-        var raw = config["EAFCBackgroundWorkerSettings:ClubIds"] ?? config["EAFCBackgroundWorkerSettings:ClubId"];
-        if (string.IsNullOrWhiteSpace(raw)) return new List<long>();
-        var parts = raw.Split(new[] { ';', ',', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-        return parts
-            .Select(p => long.TryParse(p.Trim(), out var v) ? (long?)v : null)
-            .Where(v => v.HasValue && v.Value > 0)
-            .Select(v => v!.Value)
-            .Distinct()
-            .ToList();
     }
 }

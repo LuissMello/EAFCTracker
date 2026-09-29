@@ -18,6 +18,9 @@ public class PlayoffAchievementEntity
     public string? BestDivision { get; set; }
     public string? BestFinishGroup { get; set; }
 
+    /// <summary>Edição do jogo (FK GameVersions). Pode ser nulo em registros antigos.</summary>
+    public int? GameVersionId { get; set; }
+
     // Auditoria
     public DateTime RetrievedAtUtc { get; set; }   // quando criamos o registro
     public DateTime UpdatedAtUtc { get; set; }     // última atualização via ingest

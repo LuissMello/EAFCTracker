@@ -1,5 +1,6 @@
 using EAFCMatchTracker.Application.Dtos;
 using EAFCMatchTracker.Application.Interfaces.Services;
+using EAFCMatchTracker.Application.Time;
 using EAFCMatchTracker.Domain.Entities;
 using EAFCMatchTracker.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -22,8 +23,10 @@ public class CalendarService : ICalendarService
     {
         _logger.LogInformation("CalendarService.GetMonthlyCalendarAsync year={Year} month={Month}", year, month);
 
-        var startDate = new DateTime(year, month, 1, 0, 0, 0, DateTimeKind.Utc);
-        var endDate = startDate.AddMonths(1);
+        // Mês do calendário de Brasília -> limites UTC
+        var firstDay = new DateOnly(year, month, 1);
+        var startDate = BrazilTime.StartOfLocalDayUtc(firstDay);
+        var endDate = BrazilTime.StartOfLocalDayUtc(firstDay.AddMonths(1));
 
         var monthlyMatches = await _db.Matches
             .AsNoTracking()
@@ -33,7 +36,7 @@ public class CalendarService : ICalendarService
             .ToListAsync(ct);
 
         var dailySummaries = monthlyMatches
-            .GroupBy(m => DateOnly.FromDateTime(m.Timestamp.Date))
+            .GroupBy(m => BrazilTime.ToLocalDate(m.Timestamp))
             .Select(group =>
             {
                 try { return BuildDaySummary(group, selected); }
@@ -59,8 +62,9 @@ public class CalendarService : ICalendarService
     {
         _logger.LogInformation("CalendarService.GetDayDetailsAsync date={Date}", date);
 
-        var dayStart = date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var dayEnd = dayStart.AddDays(1);
+        // Dia do calendário de Brasília -> [00:00, 24:00) em UTC
+        var dayStart = BrazilTime.StartOfLocalDayUtc(date);
+        var dayEnd = BrazilTime.StartOfLocalDayUtc(date.AddDays(1));
 
         var matchesOfDay = await _db.Matches
             .AsNoTracking()
@@ -68,7 +72,7 @@ public class CalendarService : ICalendarService
             .Where(m => m.Clubs.Any(c => selected.Contains(c.ClubId)))
             .Include(m => m.Clubs).ThenInclude(c => c.Details)
             .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
-            .OrderBy(m => m.Timestamp)
+            .OrderBy(m => m.Timestamp).ThenBy(m => m.MatchId)
             .ToListAsync(ct);
 
         var list = new List<CalendarMatchSummaryDto>();

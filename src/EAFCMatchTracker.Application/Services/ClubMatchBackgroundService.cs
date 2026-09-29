@@ -1,132 +1,117 @@
-using EAFCMatchTracker.Application.Interfaces;
-using EAFCMatchTracker.Domain.Entities;
-using EAFCMatchTracker.Infrastructure.Data;
-using Microsoft.EntityFrameworkCore;
+using EAFCMatchTracker.Application.Interfaces.Services;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using System.Diagnostics;
 
 namespace EAFCMatchTracker.Application.Services;
 
+/// <summary>
+/// Loop curto (tick) que decide se um ciclo de busca está devido. Intervalo normal =
+/// fetch_interval_minutes; durante o modo "ao vivo" = live_interval_minutes. Enquanto ao vivo,
+/// também faz um GET periódico no próprio /health para impedir que a máquina Fly.io durma.
+/// </summary>
 public sealed class ClubMatchBackgroundService : BackgroundService
 {
-    private readonly IServiceScopeFactory _scopeFactory;
-    private readonly ILogger<ClubMatchBackgroundService> _logger;
-    private readonly TimeSpan _interval;
-    private readonly string[] _clubIds;
-    private readonly SemaphoreSlim _semaphore;
+    public const string KeepAliveHttpClientName = "keepalive";
 
-    private static readonly string[] MatchTypes = ["leagueMatch", "playoffMatch"];
+    private static readonly TimeSpan Tick = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan LiveStartMinAge = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan KeepAliveEvery = TimeSpan.FromSeconds(60);
+
+    private readonly IFetchCoordinator _coordinator;
+    private readonly ILiveModeService _live;
+    private readonly IHttpClientFactory _httpFactory;
+    private readonly IConfiguration _config;
+    private readonly ILogger<ClubMatchBackgroundService> _logger;
+
+    private bool _keepAliveWarned;
 
     public ClubMatchBackgroundService(
-        IServiceScopeFactory scopeFactory,
-        ILogger<ClubMatchBackgroundService> logger,
-        IConfiguration config)
+        IFetchCoordinator coordinator,
+        ILiveModeService live,
+        IHttpClientFactory httpFactory,
+        IConfiguration config,
+        ILogger<ClubMatchBackgroundService> logger)
     {
-        _scopeFactory = scopeFactory;
+        _coordinator = coordinator;
+        _live = live;
+        _httpFactory = httpFactory;
+        _config = config;
         _logger = logger;
-
-        var intervalMinutes = config.GetValue<int?>("EAFCBackgroundWorkerSettings:ExecutionIntervalInMinutes") ?? 60;
-        _interval = TimeSpan.FromMinutes(intervalMinutes);
-
-        var clubsConfig = config["EAFCBackgroundWorkerSettings:ClubIds"] ?? "";
-        _clubIds = clubsConfig
-            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(item => item.Split(':', StringSplitOptions.TrimEntries)[0])
-            .Where(id => !string.IsNullOrEmpty(id))
-            .ToArray();
-
-        // Limita chamadas simultâneas à API da EA para não gerar rate limit
-        // Configurável via EAFCBackgroundWorkerSettings:MaxParallelFetches (padrão: 4)
-        var maxParallel = config.GetValue<int?>("EAFCBackgroundWorkerSettings:MaxParallelFetches") ?? 4;
-        _semaphore = new SemaphoreSlim(maxParallel, maxParallel);
-
-        if (_clubIds.Length == 0)
-            _logger.LogWarning("Nenhum ClubId configurado em EAFCBackgroundWorkerSettings:ClubIds");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var lastAttempt = DateTimeOffset.MinValue;
+        var lastKeepAlive = DateTimeOffset.MinValue;
+        var wasLive = false;
+
         // Executa imediatamente ao iniciar, sem aguardar o primeiro intervalo
-        await RunFetchCycleAsync(stoppingToken);
+        lastAttempt = DateTimeOffset.UtcNow;
+        await RunCycleSafeAsync(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(_interval, stoppingToken);
+                await Task.Delay(Tick, stoppingToken);
             }
-            catch (TaskCanceledException)
+            catch (OperationCanceledException)
             {
                 break;
             }
 
-            await RunFetchCycleAsync(stoppingToken);
+            try
+            {
+                var schedule = await _live.GetScheduleAsync(stoppingToken);
+                var now = DateTimeOffset.UtcNow;
+
+                var lastCycle = _coordinator.LastCycleStartedUtc;
+                var reference = lastCycle.HasValue && lastCycle.Value > lastAttempt ? lastCycle.Value : lastAttempt;
+                var age = now - reference;
+
+                var due = age >= TimeSpan.FromMinutes(schedule.EffectiveIntervalMinutes);
+
+                // Modo ao vivo recém-ligado: roda prontamente se o último ciclo tem mais de 60s
+                if (schedule.Live.Enabled && !wasLive && age >= LiveStartMinAge)
+                    due = true;
+
+                wasLive = schedule.Live.Enabled;
+
+                if (schedule.Live.Enabled && now - lastKeepAlive >= KeepAliveEvery)
+                {
+                    lastKeepAlive = now;
+                    await KeepAliveAsync(stoppingToken);
+                }
+
+                if (due)
+                {
+                    lastAttempt = DateTimeOffset.UtcNow;
+                    await RunCycleSafeAsync(stoppingToken);
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha no tick do agendador de busca.");
+            }
         }
     }
 
-    private async Task RunFetchCycleAsync(CancellationToken ct)
-    {
-        if (_clubIds.Length == 0) return;
-
-        var totalTasks = _clubIds.Length * MatchTypes.Length;
-        var sw = Stopwatch.StartNew();
-
-        _logger.LogInformation(
-            "Iniciando ciclo: {Clubs} clube(s) × {Types} tipo(s) = {Total} tarefa(s) em paralelo",
-            _clubIds.Length, MatchTypes.Length, totalTasks);
-
-        // Todas as combinações (clubId × matchType) rodam em paralelo,
-        // limitadas pelo semáforo para não sobrecarregar a API da EA
-        var tasks = _clubIds
-            .SelectMany(clubId => MatchTypes.Select(matchType => (clubId, matchType)))
-            .Select(pair => FetchWithSemaphoreAsync(pair.clubId, pair.matchType, ct));
-
-        await Task.WhenAll(tasks);
-
-        _logger.LogInformation("Ciclo concluído em {Elapsed}ms", sw.ElapsedMilliseconds);
-
-        await UpdateFetchAuditAsync(ct);
-    }
-
-    private async Task UpdateFetchAuditAsync(CancellationToken ct)
+    private async Task RunCycleSafeAsync(CancellationToken ct)
     {
         try
         {
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<EAFCContext>();
-            var now = DateTimeOffset.UtcNow;
-
-            var row = await db.SystemFetchAudits.SingleOrDefaultAsync(x => x.Id == 1, ct);
-            if (row == null)
-            {
-                db.SystemFetchAudits.Add(new SystemFetchAudit { Id = 1, LastFetchedAt = now });
-            }
-            else
-            {
-                row.LastFetchedAt = now;
-            }
-
-            await db.SaveChangesAsync(ct);
+            var result = await _coordinator.RunScheduledAsync(ct);
+            if (result.Skipped)
+                _logger.LogDebug("Ciclo agendado ignorado: já existe um ciclo em andamento.");
         }
-        catch (Exception ex)
+        catch (NoTrackedClubsException)
         {
-            _logger.LogError(ex, "Erro ao atualizar auditoria de busca após ciclo automático.");
-        }
-    }
-
-    private async Task FetchWithSemaphoreAsync(string clubId, string matchType, CancellationToken ct)
-    {
-        await _semaphore.WaitAsync(ct);
-        try
-        {
-            using var scope = _scopeFactory.CreateScope();
-            var svc = scope.ServiceProvider.GetRequiredService<IClubMatchService>();
-
-            _logger.LogInformation("Fetching ClubId={ClubId} MatchType={MatchType}", clubId, matchType);
-            await svc.FetchAndStoreMatchesAsync(clubId, matchType, ct);
+            // já logado pelo coordenador
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -134,11 +119,50 @@ public sealed class ClubMatchBackgroundService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao buscar ClubId={ClubId} MatchType={MatchType}", clubId, matchType);
+            _logger.LogError(ex, "Falha ao executar ciclo de busca agendado.");
         }
-        finally
+    }
+
+    private string? ResolveKeepAliveUrl()
+    {
+        var configured = _config["Live:KeepAliveUrl"];
+        if (!string.IsNullOrWhiteSpace(configured))
+            return configured.Trim();
+
+        var app = Environment.GetEnvironmentVariable("FLY_APP_NAME");
+        if (!string.IsNullOrWhiteSpace(app))
+            return $"https://{app.Trim()}.fly.dev/health";
+
+        return null;
+    }
+
+    private async Task KeepAliveAsync(CancellationToken ct)
+    {
+        var url = ResolveKeepAliveUrl();
+        if (url is null)
         {
-            _semaphore.Release();
+            if (!_keepAliveWarned)
+            {
+                _keepAliveWarned = true;
+                _logger.LogWarning(
+                    "Modo ao vivo ativo, mas nem Live:KeepAliveUrl nem FLY_APP_NAME estão definidos; keep-alive desativado.");
+            }
+            return;
+        }
+
+        try
+        {
+            var client = _httpFactory.CreateClient(KeepAliveHttpClientName);
+            using var resp = await client.GetAsync(url, ct);
+            _logger.LogDebug("Keep-alive {Status}", (int)resp.StatusCode);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Keep-alive falhou.");
         }
     }
 }
