@@ -18,6 +18,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="EAFCMatchTracker.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\EAFCMatchTracker.Domain\EAFCMatchTracker.Domain.csproj" />
     <ProjectReference Include="..\EAFCMatchTracker.Infrastructure\EAFCMatchTracker.Infrastructure.csproj" />
   </ItemGroup>

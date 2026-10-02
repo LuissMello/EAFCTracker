@@ -11,6 +11,12 @@ public class AppSettingEntity
         public const string MaxParallelFetches = "max_parallel_fetches";
         public const string LiveIntervalMinutes = "live_interval_minutes";
 
+        /// <summary>Até quantos minutos DEPOIS do início do registro de gols (createdAt) a partida pode aparecer para ser vinculada. A tolerância para partidas ligeiramente anteriores é GoalRegistration:LinkSlackMinutes (padrão 15).</summary>
+        public const string GoalLinkWindowMinutes = "goal_link_window_minutes";
+
+        /// <summary>Dias até um registro de gols sem partida correspondente expirar.</summary>
+        public const string GoalRegistrationExpireDays = "goal_registration_expire_days";
+
         /// <summary>"true" enquanto o modo ao vivo estiver ligado (sem expiração). Persistido em runtime, não editável via admin.</summary>
         public const string LiveEnabled = "live_enabled";
     }
@@ -25,6 +31,8 @@ public class AppSettingEntity
             new IntSetting(Keys.FetchIntervalMinutes, 60, 1, 1440),
             new IntSetting(Keys.MaxParallelFetches, 4, 1, 8),
             new IntSetting(Keys.LiveIntervalMinutes, 5, 1, 60),
+            new IntSetting(Keys.GoalLinkWindowMinutes, 360, 30, 2880),
+            new IntSetting(Keys.GoalRegistrationExpireDays, 7, 1, 60),
         };
 
         public static IntSetting? Find(string key) =>

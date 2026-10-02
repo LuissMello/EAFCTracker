@@ -20,6 +20,8 @@ public class EAFCContext : DbContext
     public DbSet<TrackedClubEntity> TrackedClubs { get; set; }
     public DbSet<SessionBoundaryEntity> SessionBoundaries { get; set; }
     public DbSet<GameVersionEntity> GameVersions { get; set; }
+    public DbSet<GoalRegistrationEntity> GoalRegistrations { get; set; }
+    public DbSet<GoalRegistrationGoalEntity> GoalRegistrationGoals { get; set; }
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -231,6 +233,68 @@ public class EAFCContext : DbContext
             .HasOne<GameVersionEntity>().WithMany()
             .HasForeignKey(c => c.GameVersionId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // ===============================
+        // GoalRegistrations (registro antecipado de gols vinculado depois à partida)
+        // ===============================
+        modelBuilder.Entity<GoalRegistrationEntity>(r =>
+        {
+            r.HasKey(x => x.Id);
+            r.Property(x => x.Id).ValueGeneratedOnAdd();
+            r.Property(x => x.OpponentName).IsRequired().HasMaxLength(100);
+            r.Property(x => x.Notes).HasMaxLength(500);
+            r.Property(x => x.ReviewNote).HasMaxLength(500);
+            r.Property(x => x.Status).HasConversion<int>();
+
+            r.HasIndex(x => new { x.ClubId, x.OpponentClubId, x.Status });
+            r.HasIndex(x => new { x.Status, x.CreatedAt });
+            r.HasIndex(x => x.MatchId)
+             .IsUnique()
+             .HasFilter("\"MatchId\" IS NOT NULL");
+
+            // Partida apagada -> registro volta a ficar sem MatchId (o linker o devolve a Pending)
+            r.HasOne<MatchEntity>().WithMany()
+             .HasForeignKey(x => x.MatchId)
+             .OnDelete(DeleteBehavior.SetNull);
+
+            r.HasMany(x => x.Goals)
+             .WithOne(g => g.GoalRegistration)
+             .HasForeignKey(g => g.GoalRegistrationId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GoalRegistrationGoalEntity>(g =>
+        {
+            g.HasKey(x => x.Id);
+            g.Property(x => x.Id).ValueGeneratedOnAdd();
+            g.HasIndex(x => new { x.GoalRegistrationId, x.Order });
+
+            g.HasOne(x => x.Scorer).WithMany()
+             .HasForeignKey(x => x.ScorerPlayerEntityId).OnDelete(DeleteBehavior.Restrict);
+            g.HasOne(x => x.Assist).WithMany()
+             .HasForeignKey(x => x.AssistPlayerEntityId).OnDelete(DeleteBehavior.Restrict);
+            g.HasOne(x => x.PreAssist).WithMany()
+             .HasForeignKey(x => x.PreAssistPlayerEntityId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // Matches.GoalRegistrationId e MatchGoalLinks.GoalRegistrationId: referência de volta ao registro
+        modelBuilder.Entity<MatchEntity>(m =>
+        {
+            m.HasOne<GoalRegistrationEntity>().WithMany()
+             .HasForeignKey(x => x.GoalRegistrationId)
+             .OnDelete(DeleteBehavior.SetNull);
+            m.HasIndex(x => x.GoalRegistrationId)
+             .IsUnique()
+             .HasFilter("\"GoalRegistrationId\" IS NOT NULL");
+        });
+
+        modelBuilder.Entity<MatchGoalLinkEntity>(l =>
+        {
+            l.HasOne<GoalRegistrationEntity>().WithMany()
+             .HasForeignKey(x => x.GoalRegistrationId)
+             .OnDelete(DeleteBehavior.SetNull);
+            l.HasIndex(x => x.GoalRegistrationId);
+        });
 
         // AppSettings (chave-valor de configuração)
         modelBuilder.Entity<AppSettingEntity>()

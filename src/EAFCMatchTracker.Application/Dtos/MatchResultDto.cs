@@ -8,6 +8,9 @@ public sealed class MatchResultDto
     /// <summary>Edição do jogo da partida (ex.: 26). Nulo se desconhecida.</summary>
     public int? GameVersion { get; set; }
 
+    /// <summary>Registro de gols (GoalRegistrations) vinculado à partida, se houver.</summary>
+    public long? GoalRegistrationId { get; set; }
+
     public string ClubAName { get; set; } = default!;
     public short ClubAGoals { get; set; }
     public short ClubARedCards { get; set; }  // mantido por retrocompatibilidade

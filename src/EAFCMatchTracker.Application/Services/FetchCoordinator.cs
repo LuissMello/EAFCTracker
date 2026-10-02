@@ -171,12 +171,35 @@ public sealed class FetchCoordinator : IFetchCoordinator
             _logger.LogWarning("Nenhuma tarefa de busca concluída com sucesso; auditoria não atualizada.");
         }
 
+        await LinkGoalRegistrationsAsync(ct);
+
         _logger.LogInformation(
             "Ciclo concluído em {Elapsed}ms. Sucessos: {Ok}. Erros: {Errors}",
             sw.ElapsedMilliseconds, successes, errors.Count);
 
         var list = errors.ToList();
         return new FetchRunResult(now, list.Count > 0, list);
+    }
+
+    /// <summary>
+    /// Vincula registros de gols pendentes às partidas recém-buscadas. Scope próprio; NUNCA faz o ciclo falhar.
+    /// </summary>
+    private async Task LinkGoalRegistrationsAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var linker = scope.ServiceProvider.GetRequiredService<IGoalRegistrationLinker>();
+            await linker.RunAsync(ct: ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao vincular registros de gols ao fim do ciclo.");
+        }
     }
 
     private static bool IsUniqueViolation(Exception ex)

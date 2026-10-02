@@ -175,9 +175,24 @@ public class GoalAnalysisService : IGoalAnalysisService
         var matchPlayers = match.MatchPlayers;
         var goals = await _goalRepository.GetGoalLinksByMatchIdAsync(matchId, ct);
 
+        string? registrationStatus = null;
+        string? reviewNote = null;
+        if (match.GoalRegistrationId is long registrationId)
+        {
+            var reg = await _db.GoalRegistrations.AsNoTracking()
+                .Where(r => r.Id == registrationId)
+                .Select(r => new { r.Status, r.ReviewNote })
+                .FirstOrDefaultAsync(ct);
+            registrationStatus = reg?.Status.ToString();
+            reviewNote = reg?.ReviewNote;
+        }
+
         return new MatchGoalsResponseDto
         {
             MatchId = matchId,
+            GoalRegistrationId = match.GoalRegistrationId,
+            RegistrationStatus = registrationStatus,
+            ReviewNote = reviewNote,
             TotalGoals = goals.Count,
             Goals = goals.Select(g =>
             {
@@ -297,6 +312,50 @@ public class GoalAnalysisService : IGoalAnalysisService
 
         foreach (var link in newLinks)
             await _goalRepository.AddGoalLinkAsync(link, ct);
+
+        // 2b) Partida com registro de gols (GoalRegistrations): o registro continua sendo a fonte da verdade, então os
+        // gols salvos aqui são espelhados nas linhas dele e os links do clube dele passam a apontar para o registro.
+        // (O payload já foi validado contra a partida real, então o registro passa a Linked.)
+        if (match.GoalRegistrationId is long registrationId)
+        {
+            var registration = await _db.GoalRegistrations
+                .Include(r => r.Goals)
+                .FirstOrDefaultAsync(r => r.Id == registrationId, ct);
+
+            if (registration != null
+                && registration.Status != GoalRegistrationStatus.Expired
+                && affectedClubs.Contains(registration.ClubId))
+            {
+                var clubLinks = newLinks.Where(l => l.ClubId == registration.ClubId).ToList();
+                foreach (var l in clubLinks) l.GoalRegistrationId = registration.Id;
+
+                _db.GoalRegistrationGoals.RemoveRange(registration.Goals.ToList());
+                registration.Goals.Clear();
+                var order = 1;
+                foreach (var l in clubLinks)
+                {
+                    registration.Goals.Add(new GoalRegistrationGoalEntity
+                    {
+                        Order = order++,
+                        ScorerPlayerEntityId = l.ScorerPlayerEntityId,
+                        AssistPlayerEntityId = l.AssistPlayerEntityId,
+                        PreAssistPlayerEntityId = l.PreAssistPlayerEntityId
+                    });
+                }
+
+                var realClubGoals = await _db.MatchClubs
+                    .Where(c => c.MatchId == matchId && c.ClubId == registration.ClubId)
+                    .Select(c => (int?)c.Goals)
+                    .FirstOrDefaultAsync(ct);
+
+                registration.MatchId = matchId;
+                registration.Status = GoalRegistrationStatus.Linked;
+                registration.LinkedAt ??= DateTime.UtcNow;
+                registration.ReviewNote = realClubGoals.HasValue
+                    ? GoalRegistrationLinker.SoftNote(clubLinks.Count, realClubGoals.Value)
+                    : null;
+            }
+        }
 
         // 3) PreAssists = quantidade de links finais em que o jogador é o pré-assistente
         var removedIds = existingLinks.Select(l => l.Id).ToHashSet();

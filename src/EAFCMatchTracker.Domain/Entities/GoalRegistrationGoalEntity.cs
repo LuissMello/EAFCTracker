@@ -1,22 +1,18 @@
 namespace EAFCMatchTracker.Domain.Entities;
 
-public class MatchGoalLinkEntity
+/// <summary>Uma linha (gol) de um registro antecipado. Ordem preservada em <see cref="Order"/>.</summary>
+public class GoalRegistrationGoalEntity
 {
     public long Id { get; set; }
+    public long GoalRegistrationId { get; set; }
+    public int Order { get; set; }
 
-    public long MatchId { get; set; }
-    public long ClubId { get; set; }
-
-    // FK para PlayerEntity
+    // FK para PlayerEntity (Players.Id), como em MatchGoalLinkEntity
     public long ScorerPlayerEntityId { get; set; }
     public long? AssistPlayerEntityId { get; set; }
     public long? PreAssistPlayerEntityId { get; set; }
 
-    /// <summary>Registro antecipado de gols que originou este link (nulo = link manual).</summary>
-    public long? GoalRegistrationId { get; set; }
-
-    // Navegação
-    public MatchEntity Match { get; set; } = default!;
+    public GoalRegistrationEntity GoalRegistration { get; set; } = default!;
     public PlayerEntity Scorer { get; set; } = default!;
     public PlayerEntity? Assist { get; set; }
     public PlayerEntity? PreAssist { get; set; }

@@ -7,8 +7,9 @@ namespace EAFCMatchTracker.Api.Security;
 ///  - <c>Authorization: Bearer &lt;token&gt;</c> (token de sessão emitido por POST /api/auth/login); ou
 ///  - <c>X-Api-Key</c> == Auth:ApiKey (mantido para scripts/curl).
 /// Rotas protegidas:
-///  - todo método diferente de GET/HEAD/OPTIONS sob /api/*, exceto POST /api/fetch/run, POST /api/fetch/live e
-///    POST /api/auth/login;
+///  - todo método diferente de GET/HEAD/OPTIONS sob /api/*, exceto POST /api/fetch/run, POST /api/fetch/live,
+///    POST /api/auth/login, POST/PUT/DELETE /api/goal-registrations/** (registro de gols, com rate limit por IP) e
+///    POST /api/matches/{id}/goals (vínculo manual de gols, com rate limit por IP);
 ///  - TODOS os métodos (inclusive GET) sob /api/admin/* e /api/maintenance/*.
 /// OPTIONS (preflight) sempre passa. O bypass vale SOMENTE em Development com Auth:ApiKey vazia/não configurada;
 /// se a chave estiver configurada, a checagem é aplicada inclusive em Development. Fora de Development sem chave
@@ -31,6 +32,9 @@ public sealed class ApiKeyMiddleware
     private static readonly PathString ApiRoot = new("/api");
     private static readonly PathString AdminRoot = new("/api/admin");
     private static readonly PathString MaintenanceRoot = new("/api/maintenance");
+
+    private static readonly PathString GoalRegistrationsRoot = new("/api/goal-registrations");
+    private static readonly PathString MatchesRoot = new("/api/matches");
 
     private static readonly string[] PublicPostPaths = ["/api/fetch/run", "/api/fetch/live", "/api/auth/login"];
 
@@ -138,6 +142,9 @@ public sealed class ApiKeyMiddleware
         if (HttpMethods.IsGet(method) || HttpMethods.IsHead(method))
             return false;
 
+        if (IsPublicGoalWrite(path, method))
+            return false;
+
         if (HttpMethods.IsPost(method))
         {
             var normalized = (path.Value ?? string.Empty).TrimEnd('/');
@@ -149,5 +156,25 @@ public sealed class ApiKeyMiddleware
         }
 
         return true;
+    }
+
+    // Escritas públicas do registro de gols (rate limit por IP aplicado nos controllers):
+    //  - POST/PUT/DELETE /api/goal-registrations e subrotas (admin: /api/admin/goal-registrations/* continua protegido);
+    //  - POST /api/matches/{id}/goals (vínculo manual de gols na página da partida).
+    private static bool IsPublicGoalWrite(PathString path, string method)
+    {
+        if (path.StartsWithSegments(GoalRegistrationsRoot))
+            return HttpMethods.IsPost(method) || HttpMethods.IsPut(method) || HttpMethods.IsDelete(method);
+
+        if (HttpMethods.IsPost(method) && path.StartsWithSegments(MatchesRoot, out var rest))
+        {
+            // rest = "/{id}/goals"
+            var segments = (rest.Value ?? string.Empty).Trim('/').Split('/');
+            return segments.Length == 2
+                && long.TryParse(segments[0], out _)
+                && string.Equals(segments[1], "goals", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 }

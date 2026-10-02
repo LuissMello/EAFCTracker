@@ -1,4 +1,5 @@
 using EAFCMatchTracker.Api.Infrastructure;
+using EAFCMatchTracker.Api.Infrastructure.Dev;
 using EAFCMatchTracker.Api.Security;
 using EAFCMatchTracker.Application.Interfaces;
 using EAFCMatchTracker.Application.Interfaces.Repositories;
@@ -11,12 +12,14 @@ using EAFCMatchTracker.Infrastructure.Data;
 using EAFCMatchTracker.Infrastructure.Http;
 
 using Microsoft.AspNetCore.Localization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 
 using System.Globalization;
 using System.Net;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,7 +31,12 @@ if (string.IsNullOrWhiteSpace(builder.Configuration["urls"]))
 
 var isDevelopment = builder.Environment.IsDevelopment();
 
+// Auxílio de teste (ver Infrastructure/Dev/DemoDataSeeder.cs): /api/dev/* só existe com banco em memória + Seed:Demo + Development.
+var devSimulatorEnabled = DemoDataSeeder.SimulatorEnabled(builder.Configuration, builder.Environment);
+if (devSimulatorEnabled) builder.Services.AddScoped<DevMatchSimulator>();
+
 builder.Services.AddControllers()
+    .ConfigureApplicationPartManager(m => m.FeatureProviders.Add(new DevControllerFeatureProvider(devSimulatorEnabled)))
     .AddJsonOptions(options =>
     {
         // Emite UTF-8 literal em vez de \uXXXX para acentos/caracteres especiais
@@ -70,6 +78,7 @@ builder.Services.AddScoped<IFetchRepository, FetchRepository>();
 builder.Services.AddScoped<IAppSettingRepository, AppSettingRepository>();
 builder.Services.AddScoped<ITrackedClubRepository, TrackedClubRepository>();
 builder.Services.AddScoped<IGameVersionRepository, GameVersionRepository>();
+builder.Services.AddScoped<IGoalRegistrationRepository, GoalRegistrationRepository>();
 
 // Services
 builder.Services.AddScoped<IClubService, ClubService>();
@@ -81,6 +90,13 @@ builder.Services.AddScoped<ITrendsService, TrendsService>();
 builder.Services.AddScoped<IGoalAnalysisService, GoalAnalysisService>();
 builder.Services.AddScoped<IMaintenanceService, MaintenanceService>();
 builder.Services.AddScoped<IFetchService, FetchService>();
+
+// Registro de gols ao vivo/antecipado (público, com rate limit por IP): linker, serviço, busca/preview de adversários
+builder.Services.AddScoped<IGoalRegistrationLinker, GoalRegistrationLinker>();
+builder.Services.AddScoped<IGoalRegistrationService, GoalRegistrationService>();
+builder.Services.AddScoped<IEaClubSearchClient, EaClubSearchClient>();
+builder.Services.AddScoped<IOpponentSearchService, OpponentSearchService>();
+builder.Services.AddScoped<IOpponentPreviewService, OpponentPreviewService>();
 
 builder.Services.AddHttpClient<IEAHttpClient, EAHttpClient>()
     .ConfigureHttpClient((sp, client) =>
@@ -107,6 +123,49 @@ builder.Services.AddHttpClient<IEAHttpClient, EAHttpClient>()
     });
 
 builder.Services.Configure<EAFCSettings>(builder.Configuration.GetSection("EAFCSettings"));
+
+// Rate limit por IP (janela fixa de 1 min) das rotas PÚBLICAS do registro de gols: busca, preview e escritas.
+// Limites padrão 30/20/60 por minuto (configuráveis em RateLimits:GoalRegistration*PerMinute). Estouro -> 429 + Retry-After.
+var behindFlyProxy = !string.IsNullOrEmpty(builder.Configuration["FLY_APP_NAME"]);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    void AddPerIpPolicy(string name, string configKey, int defaultPermits) =>
+        options.AddPolicy(name, httpContext =>
+        {
+            var permits = builder.Configuration.GetValue<int?>(configKey) is > 0 and var configured ? configured : defaultPermits;
+            return RateLimitPartition.GetFixedWindowLimiter(
+                ClientIpResolver.Resolve(httpContext, behindFlyProxy),
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = permits,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                });
+        });
+
+    AddPerIpPolicy(EAFCMatchTracker.Api.Controllers.GoalRegistrationsController.SearchPolicy, "RateLimits:GoalRegistrationSearchPerMinute", 30);
+    AddPerIpPolicy(EAFCMatchTracker.Api.Controllers.GoalRegistrationsController.PreviewPolicy, "RateLimits:GoalRegistrationPreviewPerMinute", 20);
+    AddPerIpPolicy(EAFCMatchTracker.Api.Controllers.GoalRegistrationsController.WritePolicy, "RateLimits:GoalRegistrationWritePerMinute", 60);
+
+    options.OnRejected = async (context, token) =>
+    {
+        var response = context.HttpContext.Response;
+        var seconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+            ? Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))
+            : 60;
+        response.StatusCode = StatusCodes.Status429TooManyRequests;
+        response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
+        await response.WriteAsJsonAsync(new Microsoft.AspNetCore.Mvc.ProblemDetails
+        {
+            Status = StatusCodes.Status429TooManyRequests,
+            Title = "Too Many Requests",
+            Detail = "Muitas requisições. Aguarde um instante e tente novamente."
+        }, options: null, contentType: "application/problem+json", cancellationToken: token);
+    };
+});
 
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
     ?.Where(o => !string.IsNullOrWhiteSpace(o))
@@ -250,6 +309,12 @@ if (useInMemory)
 
 await SeedDefaultSettingsAsync(app.Services);
 
+// Somente em memória + Seed:Demo=true (auxílio de teste): dados de demonstração
+if (DemoDataSeeder.IsEnabled(app.Configuration))
+{
+    await DemoDataSeeder.SeedAsync(app.Services, app.Logger);
+}
+
 if (isDevelopment)
 {
     app.UseSwagger();
@@ -259,6 +324,8 @@ if (isDevelopment)
 app.UseCors("AllowReactApp");
 
 app.UseMiddleware<ApiKeyMiddleware>();
+
+app.UseRateLimiter();
 
 app.UseAuthorization();
 app.MapControllers();

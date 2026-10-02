@@ -2,6 +2,7 @@ using EAFCMatchTracker.Application.Dtos;
 using EAFCMatchTracker.Application.Exceptions;
 using EAFCMatchTracker.Application.Interfaces.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace EAFCMatchTracker.Api.Controllers;
 
@@ -141,6 +142,8 @@ public class MatchesController : ControllerBase
         }
     }
 
+    // PÚBLICO (liberado no ApiKeyMiddleware) com rate limit por IP: o vínculo manual de gols fica disponível a todos.
+    [EnableRateLimiting(GoalRegistrationsController.WritePolicy)]
     [HttpPost("{matchId}/goals")]
     public async Task<IActionResult> RegisterGoals(long matchId, [FromBody] RegisterGoalsRequest request, CancellationToken ct)
     {

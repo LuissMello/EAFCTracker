@@ -984,6 +984,7 @@ public class MatchService : IMatchService
                 MatchId = match.MatchId,
                 Timestamp = match.Timestamp,
                 GameVersion = match.GameVersionId.HasValue && versionNumberById.TryGetValue(match.GameVersionId.Value, out var gv) ? gv : null,
+                GoalRegistrationId = match.GoalRegistrationId,
                 ClubAName = a.Details?.Name ?? $"Clube {a.ClubId}",
                 ClubAGoals = a.Goals,
                 ClubARedCards = redA,

@@ -12,6 +12,9 @@ public class MatchEntity
     /// <summary>Edição do jogo (FK GameVersions). Nulo apenas se nenhuma edição existia na gravação.</summary>
     public int? GameVersionId { get; set; }
 
+    /// <summary>Registro antecipado de gols (GoalRegistrations) vinculado a esta partida, se houver.</summary>
+    public long? GoalRegistrationId { get; set; }
+
     public ICollection<MatchClubEntity> Clubs { get; set; }
     public ICollection<MatchPlayerEntity> MatchPlayers { get; set; }
 }
