@@ -54,6 +54,7 @@ public static class DemoDataSeeder
         if (await db.Players.AnyAsync(p => p.ClubId == OurClubId)) return;
 
         var versionId = await db.GameVersions.Where(v => v.IsCurrent).Select(v => (int?)v.Id).FirstOrDefaultAsync();
+        var oldVersionId = await db.GameVersions.Where(v => v.Version == 26).Select(v => (int?)v.Id).FirstOrDefaultAsync() ?? versionId;
         var now = DateTime.UtcNow;
 
         var players = new List<PlayerEntity>();
@@ -68,12 +69,13 @@ public static class DemoDataSeeder
         for (var i = 0; i < players.Count; i++) players[i].PlayerMatchStatsId = stats[i].Id;
         await db.SaveChangesAsync();
 
-        // Historical matches (newest -> oldest); active players appear in recent ones, inactive only in old ones.
+        // Historical matches (> 90 days ago, FC26): only the "inactive" players, so they stay outside the 90-day active
+        // window. The last ~10 weeks are seeded as proper game nights below (DemoGameNights) for the analytics pages.
         var rnd = new Random(42);
+        var cardRnd = new Random(4242);
         var history = new (int DaysAgo, int Opp, int Ours, int Theirs)[]
         {
-            (2, 0, 3, 1), (4, 1, 2, 2), (7, 2, 1, 0), (10, 1, 4, 3), (14, 0, 0, 2),
-            (21, 2, 2, 1), (28, 1, 5, 0), (45, 0, 1, 1), (100, 1, 2, 3), (95, 2, 3, 2), (110, 0, 1, 2), (118, 1, 2, 0),
+            (100, 1, 2, 3), (95, 2, 3, 2), (110, 0, 1, 2), (118, 1, 2, 0),
         };
         for (var n = 0; n < history.Length; n++)
         {
@@ -90,14 +92,23 @@ public static class DemoDataSeeder
 
             var opp = Opponents[h.Opp];
             var ts = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc).AddDays(-h.DaysAgo).AddHours(21).AddMinutes(rnd.Next(0, 90));
-            DemoMatch.Insert(db, 8_000_000_000L + n, ts, versionId, OurClubId, "Nosso Clube (demo)", h.Ours,
+            DemoMatch.Insert(db, 8_000_000_000L + n, ts, oldVersionId, OurClubId, "Nosso Clube (demo)", h.Ours,
                 opp.Id, opp.Name, h.Theirs, lineup.Select((p, i) => (p, goals[i], assists[i])).ToList(), stats);
+
+            // Shots/passes/tackles/saves for the cards page (own Random: the lineups above are unchanged).
+            foreach (var entry in db.ChangeTracker.Entries<MatchPlayerEntity>().Where(e => e.Entity.MatchId == 8_000_000_000L + n).ToList())
+            {
+                DemoGameNights.AddCardStats(entry.Entity, entry.Entity.ProName, h.Ours, h.Theirs, cardRnd);
+                if (entry.Entity.ProName is { } pn && DemoGameNights.HistoryRating.TryGetValue(pn, out var hr)) entry.Entity.Rating = hr;
+            }
         }
 
         await db.SaveChangesAsync();
+
+        var nightMatches = await DemoGameNights.SeedAsync(db, players, stats, versionId, oldVersionId, now);
         logger.LogWarning(
-            "Seed:Demo ATIVO: dados de demonstração criados no banco EM MEMÓRIA (clube {ClubId}, {Players} jogadores, {Matches} partidas).",
-            OurClubId, players.Count, history.Length);
+            "Seed:Demo ATIVO: dados de demonstração criados no banco EM MEMÓRIA (clube {ClubId}, {Players} jogadores, {Matches} partidas, {Nights} noites de jogo).",
+            OurClubId, players.Count, history.Length + nightMatches, DemoGameNights.Nights.Length);
     }
 }
 
@@ -108,6 +119,15 @@ internal static class DemoMatch
     private static long DemoTeamId(long clubId, long ourClubId) => clubId == ourClubId
         ? 45
         : (clubId % 3) switch { 1 => 243, 2 => 21, _ => 241 };
+
+    internal static MatchClubEntity BuildClub(long matchId, DateTime ts, long clubId, string name, int gf, int ga, long ourClubId, int division) => new()
+    {
+        MatchId = matchId, ClubId = clubId, Date = ts, GameNumber = 1, Goals = (short)gf, GoalsAgainst = (short)ga,
+        Result = (short)(gf > ga ? 1 : gf < ga ? 2 : 3), Wins = (short)(gf > ga ? 1 : 0), Losses = (short)(gf < ga ? 1 : 0),
+        Ties = (short)(gf == ga ? 1 : 0), MatchType = 1, SeasonId = 1, Team = clubId == ourClubId ? 1 : 2,
+        CurrentDivision = division,
+        Details = new ClubDetailsEntity { ClubId = clubId, Name = name, CrestAssetId = "999001", TeamId = DemoTeamId(clubId, ourClubId) }
+    };
 
     public static void Insert(
         EAFCContext db, long matchId, DateTime timestampUtc, int? versionId,
@@ -120,14 +140,7 @@ internal static class DemoMatch
         var ts = DateTime.SpecifyKind(new DateTime(timestampUtc.Ticks - timestampUtc.Ticks % TimeSpan.TicksPerSecond), DateTimeKind.Utc);
         db.Matches.Add(new MatchEntity { MatchId = matchId, Timestamp = ts, MatchType = MatchType.League, GameVersionId = versionId });
 
-        MatchClubEntity Club(long clubId, string name, int gf, int ga) => new()
-        {
-            MatchId = matchId, ClubId = clubId, Date = ts, GameNumber = 1, Goals = (short)gf, GoalsAgainst = (short)ga,
-            Result = (short)(gf > ga ? 1 : gf < ga ? 2 : 3), Wins = (short)(gf > ga ? 1 : 0), Losses = (short)(gf < ga ? 1 : 0),
-            Ties = (short)(gf == ga ? 1 : 0), MatchType = 1, SeasonId = 1, Team = clubId == ourClubId ? 1 : 2,
-            CurrentDivision = 5,
-            Details = new ClubDetailsEntity { ClubId = clubId, Name = name, CrestAssetId = "999001", TeamId = DemoTeamId(clubId, ourClubId) }
-        };
+        MatchClubEntity Club(long clubId, string name, int gf, int ga) => BuildClub(matchId, ts, clubId, name, gf, ga, ourClubId, 5);
         db.MatchClubs.Add(Club(ourClubId, ourName, ourGoals, oppGoals));
         db.MatchClubs.Add(Club(oppClubId, oppName, oppGoals, ourGoals));
 

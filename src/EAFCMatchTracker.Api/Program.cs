@@ -6,6 +6,7 @@ using EAFCMatchTracker.Application.Interfaces.Repositories;
 using EAFCMatchTracker.Application.Interfaces.Services;
 using EAFCMatchTracker.Application.Repositories;
 using EAFCMatchTracker.Application.Services;
+using EAFCMatchTracker.Application.Services.Analytics;
 using EAFCMatchTracker.Domain.Entities;
 using EAFCMatchTracker.Domain.Settings;
 using EAFCMatchTracker.Infrastructure.Data;
@@ -59,7 +60,9 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 // Orquestração de busca (single-flight) e modo ao vivo
 builder.Services.AddSingleton<ILiveModeService, LiveModeService>();
 builder.Services.AddSingleton<IFetchCoordinator, FetchCoordinator>();
-builder.Services.AddHostedService<ClubMatchBackgroundService>();
+// Modo somente leitura (análise local contra o banco real): nada de buscas na EA nem gravações. Ver ReadOnlyMode.cs.
+var readOnly = ReadOnlyMode.IsEnabled(builder.Configuration);
+if (!readOnly) builder.Services.AddHostedService<ClubMatchBackgroundService>();
 
 // HttpClient simples para keep-alive (NÃO é o cliente da EA)
 builder.Services.AddHttpClient(ClubMatchBackgroundService.KeepAliveHttpClientName, client =>
@@ -90,6 +93,12 @@ builder.Services.AddScoped<ITrendsService, TrendsService>();
 builder.Services.AddScoped<IGoalAnalysisService, GoalAnalysisService>();
 builder.Services.AddScoped<IMaintenanceService, MaintenanceService>();
 builder.Services.AddScoped<IFetchService, FetchService>();
+
+// Páginas analíticas públicas (noite de jogo, laboratório, retrospectiva): somente leitura, cache de 60 s
+builder.Services.AddScoped<IGameNightService, GameNightService>();
+builder.Services.AddScoped<ILabService, LabService>();
+builder.Services.AddScoped<IWrappedService, WrappedService>();
+builder.Services.AddScoped<IPlayerCardService, PlayerCardService>();
 
 // Registro de gols ao vivo/antecipado (público, com rate limit por IP): linker, serviço, busca/preview de adversários
 builder.Services.AddScoped<IGoalRegistrationLinker, GoalRegistrationLinker>();
@@ -149,6 +158,9 @@ builder.Services.AddRateLimiter(options =>
     AddPerIpPolicy(EAFCMatchTracker.Api.Controllers.GoalRegistrationsController.SearchPolicy, "RateLimits:GoalRegistrationSearchPerMinute", 30);
     AddPerIpPolicy(EAFCMatchTracker.Api.Controllers.GoalRegistrationsController.PreviewPolicy, "RateLimits:GoalRegistrationPreviewPerMinute", 20);
     AddPerIpPolicy(EAFCMatchTracker.Api.Controllers.GoalRegistrationsController.WritePolicy, "RateLimits:GoalRegistrationWritePerMinute", 60);
+
+    // Leituras das páginas analíticas (noite de jogo, laboratório, retrospectiva): 120/min por IP (RateLimits:AnalyticsReadPerMinute; o Laboratório faz 3 chamadas por troca de filtro e « » da noite faz 1 por clique)
+    AddPerIpPolicy(EAFCMatchTracker.Api.Controllers.AnalyticsControllerBase.RateLimitPolicy, "RateLimits:AnalyticsReadPerMinute", 120);
 
     options.OnRejected = async (context, token) =>
     {
@@ -233,6 +245,9 @@ builder.Services.AddDbContext<EAFCContext>(options =>
             options.LogTo(Console.WriteLine, LogLevel.Information);
         }
     }
+
+    // Última barreira do modo somente leitura: recusa qualquer comando SQL de escrita.
+    if (readOnly) options.AddInterceptors(new ReadOnlyCommandInterceptor());
 });
 
 var healthChecks = builder.Services.AddHealthChecks();
@@ -295,7 +310,18 @@ if (!useInMemory)
         await WaitForDatabaseAsync(services);
 
         var db = services.GetRequiredService<EAFCContext>();
-        db.Database.Migrate();
+        if (readOnly)
+        {
+            // Não migra: só avisa se o banco estiver atrás do código (as páginas novas podem falhar nesse caso).
+            var pending = db.Database.GetPendingMigrations().ToList();
+            if (pending.Count > 0)
+                app.Logger.LogWarning("Modo somente leitura: {Count} migration(s) pendente(s) no banco ({Names}); não serão aplicadas.",
+                    pending.Count, string.Join(", ", pending));
+        }
+        else
+        {
+            db.Database.Migrate();
+        }
     }
 }
 
@@ -307,13 +333,16 @@ if (useInMemory)
     scope.ServiceProvider.GetRequiredService<EAFCContext>().Database.EnsureCreated();
 }
 
-await SeedDefaultSettingsAsync(app.Services);
+if (!readOnly) await SeedDefaultSettingsAsync(app.Services);
 
 // Somente em memória + Seed:Demo=true (auxílio de teste): dados de demonstração
-if (DemoDataSeeder.IsEnabled(app.Configuration))
+if (!readOnly && DemoDataSeeder.IsEnabled(app.Configuration))
 {
     await DemoDataSeeder.SeedAsync(app.Services, app.Logger);
 }
+
+if (readOnly)
+    app.Logger.LogWarning("MODO SOMENTE LEITURA ATIVO: sem busca na EA, sem migrations, sem sementes; requisições que não são GET recebem 403 e comandos SQL de escrita são recusados.");
 
 if (isDevelopment)
 {
@@ -322,6 +351,8 @@ if (isDevelopment)
 }
 
 app.UseCors("AllowReactApp");
+
+if (readOnly) app.UseMiddleware<ReadOnlyGuardMiddleware>();
 
 app.UseMiddleware<ApiKeyMiddleware>();
 

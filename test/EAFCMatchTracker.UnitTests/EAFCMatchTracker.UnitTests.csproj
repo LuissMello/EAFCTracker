@@ -22,4 +22,14 @@
     <ProjectReference Include="../../src/EAFCMatchTracker.Application/EAFCMatchTracker.Application.csproj" />
   </ItemGroup>
 
+  <!-- Modo somente leitura da API: o arquivo é compilado aqui (link) para testar a lógica sem referenciar o projeto web inteiro. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Compile Include="../../src/EAFCMatchTracker.Api/Infrastructure/ReadOnlyMode.cs" Link="ReadOnlyMode.cs" />
+    <!-- Controllers das Cartas (e a base analítica) também são compilados aqui para testar a validação de entrada (400/404). -->
+    <Compile Include="../../src/EAFCMatchTracker.Api/Controllers/AnalyticsControllerBase.cs" Link="AnalyticsControllerBase.cs" />
+    <Compile Include="../../src/EAFCMatchTracker.Api/Controllers/PlayerCardsController.cs" Link="PlayerCardsController.cs" />
+    <Using Include="Microsoft.AspNetCore.Http" />
+  </ItemGroup>
+
 </Project>
