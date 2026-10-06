@@ -100,6 +100,11 @@ builder.Services.AddScoped<ILabService, LabService>();
 builder.Services.AddScoped<IWrappedService, WrappedService>();
 builder.Services.AddScoped<IPlayerCardService, PlayerCardService>();
 
+// Arquétipos de jogador: catálogo singleton (cache de 10 min; lê o banco por escopo próprio e cai para "vazio" se a
+// tabela PlayerArchetypes não existir) + serviço de resumo/Admin
+builder.Services.AddSingleton<IArchetypeCatalog, ArchetypeCatalog>();
+builder.Services.AddScoped<IArchetypeService, ArchetypeService>();
+
 // Registro de gols ao vivo/antecipado (público, com rate limit por IP): linker, serviço, busca/preview de adversários
 builder.Services.AddScoped<IGoalRegistrationLinker, GoalRegistrationLinker>();
 builder.Services.AddScoped<IGoalRegistrationService, GoalRegistrationService>();

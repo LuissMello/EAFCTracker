@@ -25,16 +25,20 @@ public sealed class WrappedService : IWrappedService
     private readonly ClubSessionService _sessions;
     private readonly IMemoryCache _cache;
     private readonly ClubAnalyticsLoader _loader;
+    private readonly IArchetypeCatalog _archetypes;
 
-    public WrappedService(EAFCContext db, ClubSessionService sessions, IMemoryCache cache)
+    public WrappedService(EAFCContext db, ClubSessionService sessions, IMemoryCache cache, IArchetypeCatalog? archetypes = null)
     {
         _sessions = sessions;
         _cache = cache;
         _loader = new ClubAnalyticsLoader(db);
+        _archetypes = archetypes ?? EmptyArchetypeCatalog.Instance;
     }
 
-    public Task<WrappedDto> GetWrappedAsync(long clubId, int? gameVersion, CancellationToken ct) =>
-        AnalyticsCache.GetOrCreateAsync(_cache, _loader, "wrapped", clubId, $"v={gameVersion}", async () =>
+    public async Task<WrappedDto> GetWrappedAsync(long clubId, int? gameVersion, CancellationToken ct)
+    {
+        var catalog = await _archetypes.GetAsync(ct);
+        return await AnalyticsCache.GetOrCreateAsync(_cache, _loader, "wrapped", clubId, $"v={gameVersion}:c{catalog.Version}", async () =>
         {
             var info = await _loader.GetClubInfoAsync(clubId, ct);
             var (known, versionId, versionName) = await _loader.ResolveVersionAsync(gameVersion, ct);
@@ -42,16 +46,19 @@ public sealed class WrappedService : IWrappedService
                 ? await _loader.LoadAsync(clubId, versionId, null, null, null, DataParts.All, ct)
                 : new ClubDataset();
             var sessions = data.Matches.Count > 0 ? await _sessions.GetForClubAsync(clubId, ct) : new List<ClubSession>();
-            var dto = Build(clubId, info, data, sessions);
+            var dto = Build(clubId, info, data, sessions, catalog);
             dto.GameVersion = gameVersion;
             dto.GameVersionName = versionName;
             return dto;
         }, ct);
+    }
 
     private sealed record SessionSlice(ClubSession Session, List<MatchRow> Matches);
 
-    internal static WrappedDto Build(long clubId, ClubInfo info, ClubDataset data, List<ClubSession> allSessions)
+    internal static WrappedDto Build(
+        long clubId, ClubInfo info, ClubDataset data, List<ClubSession> allSessions, ArchetypeCatalogSnapshot? catalog = null)
     {
+        catalog ??= ArchetypeCatalogSnapshot.Empty;
         var rows = data.Matches;
         var zone = info.Zone;
         var dto = new WrappedDto { ClubId = clubId, ClubName = info.Name, TimeZoneId = info.TimeZoneId };
@@ -78,8 +85,9 @@ public sealed class WrappedService : IWrappedService
             LongestCleanSheet = Longest(rows, m => m.Ga == 0, Local)
         };
         dto.BigMoments = BuildMoments(rows, slices, zone);
-        var (players, hatTricks) = BuildPlayers(data);
+        var (players, hatTricks) = BuildPlayers(data, catalog);
         dto.Players = players;
+        dto.Archetypes = BuildArchetypes(data, catalog);
         dto.BestDuo = BuildBestDuo(data);
         dto.Opponents = BuildOpponents(rows);
         dto.Rhythm = BuildRhythm(rows, zone);
@@ -183,8 +191,23 @@ public sealed class WrappedService : IWrappedService
         public int Reds { get; set; }
     }
 
-    private static (WrappedPlayersDto Players, int HatTricks) BuildPlayers(ClubDataset data)
+    /// <summary>Uso de arquétipos no nível do clube: todas as linhas jogador×partida; trocas = soma das trocas de cada jogador.</summary>
+    private static WrappedArchetypesDto BuildArchetypes(ClubDataset data, ArchetypeCatalogSnapshot catalog)
     {
+        var all = data.PlayersByMatch.Values.SelectMany(l => l).ToList();
+        var list = ArchetypeUsageCalc.Usages(ArchetypeUsageCalc.SamplesOf(all, data), catalog.RefOf);
+        var switches = all.GroupBy(r => r.PlayerId)
+            .Sum(g => ArchetypeUsageCalc.Changes(ArchetypeUsageCalc.SamplesOf(g, data), catalog.RefOf).Count);
+        return new WrappedArchetypesDto { MostUsed = list.Count > 0 ? list[0] : null, Switches = switches, List = list };
+    }
+
+    private static (WrappedPlayersDto Players, int HatTricks) BuildPlayers(ClubDataset data, ArchetypeCatalogSnapshot catalog)
+    {
+        var usagesByPlayer = data.PlayersByMatch.Values.SelectMany(l => l).GroupBy(p => p.PlayerId)
+            .ToDictionary(g => g.Key, g => ArchetypeUsageCalc.Usages(ArchetypeUsageCalc.SamplesOf(g, data), catalog.RefOf));
+        List<ArchetypeUsage> UsagesOf(long id) => usagesByPlayer.TryGetValue(id, out var u) ? u : new List<ArchetypeUsage>();
+        ArchetypeRef? PrincipalOf(long id) => ArchetypeUsageCalc.Principal(UsagesOf(id));
+
         var aggs = data.PlayersByMatch.Values.SelectMany(l => l).GroupBy(p => p.PlayerId)
             .Select(g => new Agg
             {
@@ -201,12 +224,20 @@ public sealed class WrappedService : IWrappedService
 
         WrappedPlayerStatDto? Pick(IEnumerable<Agg> source, Func<Agg, double> value) => source
             .OrderByDescending(value).ThenBy(a => a.Matches).ThenBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(a => new WrappedPlayerStatDto { PlayerEntityId = a.Id, Name = a.Name, Value = StatsUtil.Round2(value(a)), Matches = a.Matches })
+            .Select(a => new WrappedPlayerStatDto
+            {
+                PlayerEntityId = a.Id, Name = a.Name, Value = StatsUtil.Round2(value(a)), Matches = a.Matches,
+                Archetype = PrincipalOf(a.Id), Archetypes = UsagesOf(a.Id)
+            })
             .FirstOrDefault();
 
         var mostMatches = aggs
             .OrderByDescending(a => a.Matches).ThenByDescending(a => a.Goals).ThenBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(a => new WrappedPlayerStatDto { PlayerEntityId = a.Id, Name = a.Name, Value = a.Matches, Matches = a.Matches })
+            .Select(a => new WrappedPlayerStatDto
+            {
+                PlayerEntityId = a.Id, Name = a.Name, Value = a.Matches, Matches = a.Matches,
+                Archetype = PrincipalOf(a.Id), Archetypes = UsagesOf(a.Id)
+            })
             .FirstOrDefault();
 
         var hatTricks = data.PlayersByMatch.Values.SelectMany(l => l).Count(r => r.Goals >= 3);
@@ -218,7 +249,11 @@ public sealed class WrappedService : IWrappedService
             MostRedCards = Pick(aggs.Where(a => a.Reds > 0), a => a.Reds),
             BestAvgRating = aggs.Where(a => a.Rated >= MinRatingMatches)
                 .OrderByDescending(a => a.RatingSum / a.Rated).ThenByDescending(a => a.Rated).ThenBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(a => new WrappedPlayerStatDto { PlayerEntityId = a.Id, Name = a.Name, Value = StatsUtil.Round2(a.RatingSum / a.Rated), Matches = a.Rated })
+                .Select(a => new WrappedPlayerStatDto
+                {
+                    PlayerEntityId = a.Id, Name = a.Name, Value = StatsUtil.Round2(a.RatingSum / a.Rated), Matches = a.Rated,
+                    Archetype = PrincipalOf(a.Id), Archetypes = UsagesOf(a.Id)
+                })
                 .FirstOrDefault(),
             MostMatches = mostMatches,
             HatTricks = hatTricks

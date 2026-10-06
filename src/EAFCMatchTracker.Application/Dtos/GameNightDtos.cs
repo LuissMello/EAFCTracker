@@ -112,6 +112,32 @@ public class GameNightPlayerDto : NamedPlayerDto
     public double AvgRating { get; set; }
     public int Motm { get; set; }
     public int RedCards { get; set; }
+
+    /// <summary>Arquétipo principal da noite (mais jogos; empate = o mais recente); nulo sem dado.</summary>
+    public ArchetypeRef? Archetype { get; set; }
+    /// <summary>Uso de cada arquétipo na noite (vazio sem dado; mais de um item = trocou durante a noite).</summary>
+    public List<ArchetypeUsage> Archetypes { get; set; } = new();
+    /// <summary>
+    /// Uma linha por combinação (arquétipo, grupo da posição) jogada na noite, mais jogos primeiro. Só vem preenchido quando o
+    /// jogador teve mais de uma combinação distinta (a soma dos segmentos é igual ao total da linha principal).
+    /// </summary>
+    public List<NightPlayerSegmentDto> Segments { get; set; } = new();
+}
+
+public class NightPlayerSegmentDto
+{
+    /// <summary>Nulo = partidas sem dado de arquétipo.</summary>
+    public ArchetypeRef? Archetype { get; set; }
+    /// <summary>Posição mais usada no segmento (a mais recente em empate); nulo se nunca houve.</summary>
+    public string? Position { get; set; }
+    public string? PositionGroup { get; set; }
+    public int Matches { get; set; }
+    public int Goals { get; set; }
+    public int Assists { get; set; }
+    public int PreAssists { get; set; }
+    public double AvgRating { get; set; }
+    public int Motm { get; set; }
+    public int RedCards { get; set; }
 }
 
 /// <summary>Retrospecto contra um adversário (noite de jogo e retrospectiva).</summary>

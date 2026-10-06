@@ -106,6 +106,7 @@ public static class DtoProjections
             Wins = p.Wins,
             Pos = p.Pos,
             Namespace = p.Namespace,
+            ArchetypeId = p.Archetypeid,
             Stats = null   // use /api/Matches/{id}/players/{pid}/statistics for player attributes
         };
 
@@ -198,6 +199,7 @@ public static class DtoProjections
             VproAttr = mp.Vproattr,
             VproHackReason = mp.Vprohackreason,
             Wins = mp.Wins,
+            ArchetypeId = mp.Archetypeid,
             Statistics = mp.Player != null && mp.Player.PlayerMatchStats != null
                 ? new PlayerMatchStatsDto
                 {

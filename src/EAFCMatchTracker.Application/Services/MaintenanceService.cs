@@ -503,6 +503,7 @@ public class MaintenanceService : IMaintenanceService
                 Playername     = p.Player?.Playername ?? p.ProName ?? p.PlayerEntityId.ToString(),
                 Pos            = p.Pos,
                 Namespace      = p.Namespace,
+                ArchetypeId    = p.Archetypeid,
                 Goals          = p.Goals,
                 Assists        = p.Assists,
                 PreAssists     = p.PreAssists,

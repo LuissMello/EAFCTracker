@@ -97,6 +97,21 @@ public class PlayerCardsControllerTests
         Assert.Contains("diferentes", Problem(r).Detail);
     }
 
+    [Fact]
+    public async Task CompareWithTheSamePlayerIsAllowedOnlyWithDifferentArchetypesPerSide()
+    {
+        var (c, seed) = Make();
+        using var _ = seed;
+
+        // mesmo jogador, mesmo arquétipo nos dois lados (ou nenhum) = 400
+        Assert.Equal(400, Status(await c.Compare(AnalyticsSeed.Club, "11", "11", null, null, null, default, archetypeA: "12", archetypeB: "12")));
+        Assert.Equal(400, Status(await c.Compare(AnalyticsSeed.Club, "11", "11", null, null, null, default, archetypeId: "12")));
+        // mesmo jogador COMO arquétipos diferentes = 200
+        var r = await c.Compare(AnalyticsSeed.Club, "11", "11", null, null, null, default, archetypeA: "12", archetypeB: "11");
+        var dto = Assert.IsType<PlayerCompareDto>(Assert.IsType<OkObjectResult>(r).Value);
+        Assert.Equal((11L, 11L), (dto.A.PlayerEntityId, dto.B.PlayerEntityId));
+    }
+
     [Theory]
     [InlineData(null, "12")]
     [InlineData("11", null)]

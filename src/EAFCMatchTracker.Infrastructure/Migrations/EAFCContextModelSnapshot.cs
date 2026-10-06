@@ -578,6 +578,31 @@ namespace EAFCMatchTracker.Migrations
                     b.ToTable("OverallStats");
                 });
 
+            modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.PlayerArchetypeEntity", b =>
+                {
+                    b.Property<short>("Id")
+                        .HasColumnType("smallint");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("PositionGroup")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<string>("ShortName")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("PlayerArchetypes");
+                });
+
             modelBuilder.Entity("EAFCMatchTracker.Domain.Entities.PlayerEntity", b =>
                 {
                     b.Property<long>("Id")

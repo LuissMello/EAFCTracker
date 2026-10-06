@@ -1,14 +1,17 @@
+using EAFCMatchTracker.Application.Interfaces.Services;
 using EAFCMatchTracker.Application.Services;
 using EAFCMatchTracker.Application.Services.Analytics;
 using EAFCMatchTracker.Domain.Entities;
 using EAFCMatchTracker.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EAFCMatchTracker.UnitTests;
 
 /// <summary>Jogador do nosso clube numa partida semeada.</summary>
-internal sealed record Pl(long Id, int Goals = 0, int Assists = 0, double Rating = 7.0, bool Mom = false, int Reds = 0, int Pre = 0, string Pos = "forward");
+internal sealed record Pl(long Id, int Goals = 0, int Assists = 0, double Rating = 7.0, bool Mom = false, int Reds = 0, int Pre = 0, string Pos = "forward", int Arch = 0, int? Ovr = null, string? OvrStr = null);
 
 /// <summary>Banco em memória + semeadura de partidas para os testes das páginas analíticas.</summary>
 internal sealed class AnalyticsSeed : IDisposable
@@ -19,12 +22,13 @@ internal sealed class AnalyticsSeed : IDisposable
     public const int V27 = 3; // FC27
 
     public EAFCContext Db { get; }
+    public string DbName { get; } = $"analytics-{Guid.NewGuid()}";
     public IMemoryCache Cache { get; } = new MemoryCache(new MemoryCacheOptions());
     private long _next = 1;
 
     public AnalyticsSeed(string timeZone = "America/Sao_Paulo", int gapMinutes = 120)
     {
-        Db = new EAFCContext(new DbContextOptionsBuilder<EAFCContext>().UseInMemoryDatabase($"analytics-{Guid.NewGuid()}").Options);
+        Db = new EAFCContext(new DbContextOptionsBuilder<EAFCContext>().UseInMemoryDatabase(DbName).Options);
         Db.Database.EnsureCreated();
         var tracked = Db.TrackedClubs.Find(Club);
         if (tracked is null) Db.TrackedClubs.Add(new TrackedClubEntity { ClubId = Club, TimeZoneId = timeZone, SessionGapMinutes = gapMinutes });
@@ -32,9 +36,22 @@ internal sealed class AnalyticsSeed : IDisposable
         Db.SaveChanges();
     }
 
-    public GameNightService Nights() => new(Db, new ClubSessionService(Db), new MemoryCache(new MemoryCacheOptions()));
+    /// <summary>Catálogo de arquétipos real, lendo o MESMO banco em memória desta semente (por escopo próprio, como em produção).</summary>
+    public ArchetypeCatalog Catalog() => new(ScopeFactory(), NullLogger<ArchetypeCatalog>.Instance);
+
+    public IServiceScopeFactory ScopeFactory()
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<EAFCContext>(o => o.UseInMemoryDatabase(DbName));
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    public PlayerCardService Cards(IArchetypeCatalog? catalog = null) => new(Db, new MemoryCache(new MemoryCacheOptions()), catalog ?? Catalog());
+    public ArchetypeService Archetypes(IArchetypeCatalog? catalog = null) => new(Db, new MemoryCache(new MemoryCacheOptions()), catalog ?? Catalog());
+
+    public GameNightService Nights(IArchetypeCatalog? catalog = null) => new(Db, new ClubSessionService(Db), new MemoryCache(new MemoryCacheOptions()), catalog);
     public LabService Lab() => new(Db, new ClubSessionService(Db), new MemoryCache(new MemoryCacheOptions()));
-    public WrappedService Wrapped() => new(Db, new ClubSessionService(Db), new MemoryCache(new MemoryCacheOptions()));
+    public WrappedService Wrapped(IArchetypeCatalog? catalog = null) => new(Db, new ClubSessionService(Db), new MemoryCache(new MemoryCacheOptions()), catalog);
 
     public static readonly DateTime Base = new(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
 
@@ -76,6 +93,7 @@ internal sealed class AnalyticsSeed : IDisposable
             {
                 MatchId = matchId, ClubId = clubId, PlayerEntityId = p.Id, Goals = (short)p.Goals, Assists = (short)p.Assists,
                 PreAssists = (short)p.Pre, Rating = p.Rating, Mom = p.Mom, Redcards = (short)p.Reds, Pos = p.Pos,
+                Archetypeid = (short)p.Arch, ProOverall = p.Ovr, ProOverallStr = p.OvrStr,
                 ProName = $"Pro {p.Id}", Realtimegame = "", Realtimeidle = "", Vproattr = "", Vprohackreason = "",
                 MatchEventAggregate0 = "", MatchEventAggregate1 = "", MatchEventAggregate2 = "", MatchEventAggregate3 = ""
             });

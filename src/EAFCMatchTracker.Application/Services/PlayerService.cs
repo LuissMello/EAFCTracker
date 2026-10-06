@@ -1,6 +1,7 @@
 using EAFCMatchTracker.Application.Dtos;
 using EAFCMatchTracker.Application.Interfaces.Repositories;
 using EAFCMatchTracker.Application.Interfaces.Services;
+using EAFCMatchTracker.Application.Services.Analytics;
 using EAFCMatchTracker.Domain.Entities;
 using Microsoft.Extensions.Logging;
 
@@ -11,9 +12,13 @@ public class PlayerService : IPlayerService
     private readonly IPlayerRepository _playerRepository;
     private readonly IMatchRepository _matchRepository;
     private readonly ILogger<PlayerService> _logger;
+    private readonly IArchetypeCatalog _archetypes;
 
-    public PlayerService(IPlayerRepository playerRepository, IMatchRepository matchRepository, ILogger<PlayerService> logger)
+    public PlayerService(
+        IPlayerRepository playerRepository, IMatchRepository matchRepository, ILogger<PlayerService> logger,
+        IArchetypeCatalog archetypes)
     {
+        _archetypes = archetypes;
         _playerRepository = playerRepository;
         _matchRepository = matchRepository;
         _logger = logger;
@@ -34,8 +39,12 @@ public class PlayerService : IPlayerService
         };
     }
 
-    public async Task<PlayerProfileDto> GetProfileAsync(long playerEntityId, CancellationToken ct)
+    public Task<PlayerProfileDto> GetProfileAsync(long playerEntityId, CancellationToken ct) =>
+        GetProfileAsync(playerEntityId, null, null, ct);
+
+    public async Task<PlayerProfileDto> GetProfileAsync(long playerEntityId, int? archetypeId, string? positionGroup, CancellationToken ct)
     {
+        positionGroup = ArchetypeGroups.Normalize(positionGroup);
         _logger.LogInformation("PlayerService.GetProfileAsync for playerEntityId={PlayerEntityId}", playerEntityId);
 
         var matchPlayers = await _playerRepository.GetMatchPlayersByEntityIdAsync(playerEntityId, ct);
@@ -53,6 +62,7 @@ public class PlayerService : IPlayerService
         var name = !string.IsNullOrWhiteSpace(proName) ? proName : playerEntity?.Playername ?? "";
         var accountName = playerEntity?.Playername ?? "";
 
+        var catalog = await _archetypes.GetAsync(ct);
         var history = new List<PlayerMatchHistoryDto>();
 
         double bestRating = double.MinValue;
@@ -88,7 +98,9 @@ public class PlayerService : IPlayerService
                 Result = result,
                 GoalsFor = gf,
                 GoalsAgainst = ga,
-                OpponentName = oppClub?.Details?.Name
+                OpponentName = oppClub?.Details?.Name,
+                ArchetypeId = mp.Archetypeid,
+                Archetype = catalog.Ref(mp.Archetypeid)
             });
 
             if (mp.Rating > bestRating)
@@ -105,6 +117,12 @@ public class PlayerService : IPlayerService
 
         history = history.OrderByDescending(h => h.Timestamp).ToList();
 
+        // Filtros (AND): só restringem o histórico, o uso e o resumo filtrado; os totais abaixo seguem sobre todas as partidas.
+        var scoped = ArchetypeUsageCalc.Where(matchPlayers, mp => mp.Archetypeid, mp => mp.Pos, positionGroup, null).ToList();
+        var filtered = archetypeId.HasValue ? scoped.Where(mp => mp.Archetypeid == archetypeId.Value).ToList() : scoped;
+        var filteredIds = filtered.Select(mp => mp.MatchId).ToHashSet();
+        var filteredHistory = positionGroup is null && !archetypeId.HasValue ? history : history.Where(h => filteredIds.Contains(h.MatchId)).ToList();
+
         int totalWins = history.Count(h => h.Result == "W");
         int totalDraws = history.Count(h => h.Result == "D");
         int totalLosses = history.Count(h => h.Result == "L");
@@ -112,6 +130,22 @@ public class PlayerService : IPlayerService
         var positions = matchPlayers
             .GroupBy(mp => mp.Pos ?? "")
             .ToDictionary(g => g.Key, g => g.Count());
+
+        var samples = matchPlayers.Select(ArchetypeSample.From).ToList();
+        var filteredSamples = filtered.Select(ArchetypeSample.From).ToList();
+        var overalls = filtered.Select(mp => ArchetypeUsageCalc.OverallOf(mp.ProOverall, mp.ProOverallStr))
+            .Where(v => v.HasValue).Select(v => (double)v!.Value).ToList();
+        var filteredSummary = new PlayerFilteredSummaryDto
+        {
+            Matches = filteredHistory.Count,
+            Wins = filteredHistory.Count(h => h.Result == "W"),
+            Draws = filteredHistory.Count(h => h.Result == "D"),
+            Losses = filteredHistory.Count(h => h.Result == "L"),
+            Goals = filtered.Sum(mp => (int)mp.Goals),
+            Assists = filtered.Sum(mp => (int)mp.Assists),
+            AvgRating = filtered.Count > 0 ? StatsUtil.Round2(filtered.Average(mp => mp.Rating)) : null,
+            AvgProOverall = overalls.Count > 0 ? StatsUtil.Round2(overalls.Average()) : null
+        };
 
         var proOverall = matchPlayers
             .OrderByDescending(mp => mp.Match.Timestamp)
@@ -146,7 +180,16 @@ public class PlayerService : IPlayerService
             MostAssistsInMatch = matchPlayers.Max(mp => (int)mp.Assists),
             ProOverall = proOverall,
             Positions = positions,
-            History = history
+            History = filteredHistory,
+            // uso: com a posição aplicada e SEM o filtro de arquétipo (para a seção "Arquétipos" seguir mostrando as opções)
+            Archetypes = ArchetypeUsageCalc.Usages(scoped.Select(ArchetypeSample.From).ToList(), catalog.RefOf),
+            ArchetypeChanges = ArchetypeUsageCalc.Changes(samples, catalog.RefOf),
+            PositionGroup = positionGroup,
+            ArchetypeId = archetypeId,
+            AvailableArchetypes = ArchetypeUsageCalc.AvailableArchetypes(
+                matchPlayers, mp => mp.Archetypeid, mp => mp.PlayerEntityId, mp => mp.Pos, positionGroup, catalog.RefOf),
+            AvailablePositionGroups = ArchetypeUsageCalc.AvailablePositionGroups(matchPlayers, mp => mp.Pos),
+            FilteredSummary = filteredSummary
         };
     }
 
@@ -157,6 +200,7 @@ public class PlayerService : IPlayerService
         var matches = await _matchRepository.GetMatchesForClubWithPlayersAsync(clubId, count, ct);
         if (matches.Count == 0) return new List<PlayerAttributeSnapshotDto>();
 
+        var catalog = await _archetypes.GetAsync(ct);
         var byPlayer = matches
             .SelectMany(m => m.MatchPlayers.Select(mp => new
             {
@@ -165,7 +209,8 @@ public class PlayerService : IPlayerService
                 mp.PlayerEntityId,
                 mp.Player,
                 mp.PlayerMatchStats,
-                mp.Pos
+                mp.Pos,
+                mp.Archetypeid
             }))
             .Where(x => x.Player != null)
             .GroupBy(x => x.PlayerEntityId)
@@ -175,6 +220,8 @@ public class PlayerService : IPlayerService
                 return new PlayerAttributeSnapshotDto
                 {
                     Pos = latest.Pos,
+                    ArchetypeId = latest.Archetypeid,
+                    Archetype = catalog.Ref(latest.Archetypeid),
                     PlayerId = latest.Player!.PlayerId,
                     PlayerName = latest.Player!.Playername ?? $"Player {latest.Player!.PlayerId}",
                     ClubId = latest.Player!.ClubId,
@@ -239,6 +286,7 @@ public class PlayerService : IPlayerService
             return new List<PlayerStatisticsDto>();
 
         var (_, players, _) = StatsAggregator.BuildLimitedForClub(clubId, matches);
+        (await _archetypes.GetAsync(ct)).Apply(players);
         return players;
     }
 

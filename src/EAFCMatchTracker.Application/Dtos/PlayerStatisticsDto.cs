@@ -39,4 +39,21 @@ public class PlayerStatisticsDto
     public bool Disconnected { get; set; }
     public int TotalSecondsPlayed { get; set; }
     public int TotalGameTime { get; set; }
+
+    /// <summary>Id do arquétipo principal no recorte (mais jogos; empate = o mais recente); 0 = sem dado.</summary>
+    public short ArchetypeId { get; set; }
+    /// <summary>Arquétipo principal no recorte; nulo quando não há dado (id 0).</summary>
+    public ArchetypeRef? Archetype { get; set; }
+    /// <summary>Uso de cada arquétipo no recorte, do mais usado para o menos usado (vazio sem dado).</summary>
+    public List<ArchetypeUsage> Archetypes { get; set; } = new();
+
+    /// <summary>
+    /// Uma linha por combinação (arquétipo, grupo da posição) das partidas deste recorte; só preenchido quando o jogador teve MAIS
+    /// de uma combinação (vazio caso contrário). Mesmos campos numéricos da linha principal, calculados só sobre o subconjunto
+    /// (somas = linha principal; médias/percentuais recalculados). Mais jogos primeiro.
+    /// </summary>
+    public List<PlayerStatisticsDto> Segments { get; set; } = new();
+    /// <summary>Só nos segmentos: posição mais usada no segmento (a mais recente em empate) e seu grupo (ATAQUE/MEIO/DEFESA/GOLEIRO).</summary>
+    public string? Position { get; set; }
+    public string? PositionGroup { get; set; }
 }

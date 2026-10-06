@@ -41,12 +41,34 @@ public class PlayersController : ControllerBase
     }
 
     [HttpGet("{playerEntityId:long}/profile")]
-    public async Task<ActionResult<PlayerProfileDto>> GetPlayerProfile(long playerEntityId, CancellationToken ct)
+    public async Task<ActionResult<PlayerProfileDto>> GetPlayerProfile(
+        long playerEntityId, CancellationToken ct, [FromQuery] string? archetypeId = null, [FromQuery] string? positionGroup = null)
     {
+        // filtros opcionais do histórico: archetypeId (1..255) e positionGroup (ATAQUE/MEIO/DEFESA/GOLEIRO)
+        int? archetype = null;
+        if (!string.IsNullOrWhiteSpace(archetypeId))
+        {
+            if (!int.TryParse(archetypeId.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var a)
+                || a < 1 || a > 255)
+                return BadRequest(new ProblemDetails { Status = 400, Title = "Requisição inválida", Detail = "archetypeId deve ser um número inteiro entre 1 e 255." });
+            archetype = a;
+        }
+        string? group = null;
+        if (!string.IsNullOrWhiteSpace(positionGroup))
+        {
+            group = EAFCMatchTracker.Application.Services.Analytics.ArchetypeGroups.Normalize(positionGroup);
+            if (group is null)
+                return BadRequest(new ProblemDetails
+                {
+                    Status = 400, Title = "Requisição inválida",
+                    Detail = $"positionGroup deve ser um de: {string.Join(", ", EAFCMatchTracker.Application.Services.Analytics.ArchetypeGroups.All)}."
+                });
+        }
+
         _logger.LogInformation("GetPlayerProfile called for playerEntityId={PlayerEntityId}", playerEntityId);
         try
         {
-            var profile = await _playerService.GetProfileAsync(playerEntityId, ct);
+            var profile = await _playerService.GetProfileAsync(playerEntityId, archetype, group, ct);
             if (profile is null) return NotFound();
             return Ok(profile);
         }

@@ -11,7 +11,7 @@ namespace EAFCMatchTracker.Application.Services.Analytics;
 internal sealed record CardRow(
     long MatchId, long PlayerId, string Pos, int Goals, int Assists, int Shots, int PassesMade, int PassAttempts,
     int TacklesMade, int TackleAttempts, int Saves, double Rating, bool Mom, int Reds, int Seconds,
-    int? ProOverall, string? ProOverallStr, int? ProHeight);
+    int? ProOverall, string? ProOverallStr, int? ProHeight, int ArchetypeId = 0);
 
 /// <summary>
 /// "Cartas": cartas estilo FUT por jogador (eixos 0–99 em escalas absolutas, overall por posição, faixa) e comparador
@@ -26,12 +26,14 @@ public sealed class PlayerCardService : IPlayerCardService
     private readonly EAFCContext _db;
     private readonly IMemoryCache _cache;
     private readonly ClubAnalyticsLoader _loader;
+    private readonly IArchetypeCatalog _archetypes;
 
-    public PlayerCardService(EAFCContext db, IMemoryCache cache)
+    public PlayerCardService(EAFCContext db, IMemoryCache cache, IArchetypeCatalog? archetypes = null)
     {
         _db = db;
         _cache = cache;
         _loader = new ClubAnalyticsLoader(db);
+        _archetypes = archetypes ?? EmptyArchetypeCatalog.Instance;
     }
 
     private static int ClampMin(int minMatches) => Math.Clamp(minMatches, LabService.MinMatchesFloor, LabService.MinMatchesCeiling);
@@ -41,35 +43,80 @@ public sealed class PlayerCardService : IPlayerCardService
     {
         public ClubInfo Info { get; init; } = new();
         public ClubDataset Data { get; init; } = new();
+        /// <summary>Linhas consideradas nas cartas (com filtro de arquétipo: só as partidas desse arquétipo).</summary>
         public List<CardRow> Rows { get; init; } = new();
+        /// <summary>Todas as linhas do período (sem o filtro de arquétipo); nulo = igual a <see cref="Rows"/>.</summary>
+        public List<CardRow>? AllRows { get; init; }
+        /// <summary>Linhas com a posição aplicada e SEM o filtro de arquétipo; nulo = igual a <see cref="UsageRows"/>.</summary>
+        public List<CardRow>? PositionRows { get; init; }
+        public int? ArchetypeFilter { get; init; }
+        public string? PositionFilter { get; init; }
+        public long? PlayerFilter { get; init; }
+        public ArchetypeCatalogSnapshot Catalog { get; init; } = ArchetypeCatalogSnapshot.Empty;
+
+        /// <summary>Todas as linhas do período (sem nenhum filtro de arquétipo/posição).</summary>
+        public List<CardRow> UsageRows => AllRows ?? Rows;
+        /// <summary>Linhas para o uso de arquétipos: posição aplicada, arquétipo não.</summary>
+        public List<CardRow> ScopeRows => PositionRows ?? UsageRows;
+        public bool Filtered => ArchetypeFilter.HasValue || PositionFilter is not null;
+
+        /// <summary>
+        /// Mesmos dados, restritos às linhas jogadas com o arquétipo e/ou na posição (AND); o resto do período segue
+        /// disponível em <see cref="UsageRows"/>/<see cref="ScopeRows"/>.
+        /// </summary>
+        public CardData WithFilter(int? archetypeId, string? positionGroup, long? playerEntityId = null)
+        {
+            if (!archetypeId.HasValue && positionGroup is null && !playerEntityId.HasValue) return this;
+            var all = UsageRows;
+            var scope = ArchetypeUsageCalc.Where(all, r => r.ArchetypeId, r => r.Pos, positionGroup, null).ToList();
+            if (playerEntityId.HasValue) scope = scope.Where(r => r.PlayerId == playerEntityId.Value).ToList();
+            return new CardData
+            {
+                Info = Info, Data = Data, Catalog = Catalog, ArchetypeFilter = archetypeId, PositionFilter = positionGroup,
+                PlayerFilter = playerEntityId,
+                AllRows = all, PositionRows = scope,
+                Rows = archetypeId.HasValue ? scope.Where(r => r.ArchetypeId == archetypeId.Value).ToList() : scope
+            };
+        }
+
+        public CardData WithCatalog(ArchetypeCatalogSnapshot catalog) => new()
+        {
+            Info = Info, Data = Data, Rows = Rows, AllRows = AllRows, PositionRows = PositionRows,
+            ArchetypeFilter = ArchetypeFilter, PositionFilter = PositionFilter, PlayerFilter = PlayerFilter, Catalog = catalog
+        };
     }
 
-    private async Task<CardData> LoadAsync(long clubId, DateOnly? from, DateOnly? to, int? gameVersion, CancellationToken ct)
+    private Task<CardData> LoadAsync(long clubId, DateOnly? from, DateOnly? to, int? gameVersion, CancellationToken ct) =>
+        LoadCardDataAsync(_db, _loader, clubId, from, to, gameVersion, ct);
+
+    /// <summary>Carrega as linhas jogador×partida do clube (sem desconectados). Compartilhado com o resumo de arquétipos.</summary>
+    internal static async Task<CardData> LoadCardDataAsync(
+        EAFCContext db, ClubAnalyticsLoader loader, long clubId, DateOnly? from, DateOnly? to, int? gameVersion, CancellationToken ct)
     {
-        var info = await _loader.GetClubInfoAsync(clubId, ct);
-        var (known, versionId, _) = await _loader.ResolveVersionAsync(gameVersion, ct);
+        var info = await loader.GetClubInfoAsync(clubId, ct);
+        var (known, versionId, _) = await loader.ResolveVersionAsync(gameVersion, ct);
         if (!known) return new CardData { Info = info };
 
         DateTime? fromUtc = from.HasValue ? StatsUtil.LocalDayStartUtc(from.Value, info.Zone) : null;
         DateTime? toUtc = to.HasValue ? StatsUtil.LocalDayStartUtc(to.Value.AddDays(1), info.Zone) : null;
-        var data = await _loader.LoadAsync(clubId, versionId, fromUtc, toUtc, null, DataParts.Players | DataParts.GoalLinks, ct);
+        var data = await loader.LoadAsync(clubId, versionId, fromUtc, toUtc, null, DataParts.Players | DataParts.GoalLinks, ct);
         if (data.Matches.Count == 0) return new CardData { Info = info, Data = data };
 
         var ids = data.Matches.Select(m => m.MatchId).ToList();
         // Mesma regra das páginas de estatística (StatsAggregator): jogadores desconectados ficam de fora.
-        var rows = (await _db.MatchPlayers.AsNoTracking()
+        var rows = (await db.MatchPlayers.AsNoTracking()
                 .Where(mp => mp.ClubId == clubId && !mp.Disconnected && ids.Contains(mp.MatchId))
                 .Select(mp => new
                 {
                     mp.MatchId, mp.PlayerEntityId, mp.Pos, mp.Goals, mp.Assists, mp.Shots, mp.Passesmade, mp.Passattempts,
                     mp.Tacklesmade, mp.Tackleattempts, mp.Saves, mp.Rating, mp.Mom, mp.Redcards, mp.SecondsPlayed,
-                    mp.ProOverall, mp.ProOverallStr, mp.ProHeight
+                    mp.ProOverall, mp.ProOverallStr, mp.ProHeight, mp.Archetypeid
                 })
                 .ToListAsync(ct))
             .Select(x => new CardRow(x.MatchId, x.PlayerEntityId, (x.Pos ?? "").Trim(), x.Goals, x.Assists, x.Shots,
                 x.Passesmade, x.Passattempts, x.Tacklesmade, x.Tackleattempts, x.Saves,
                 double.IsNaN(x.Rating) ? 0 : x.Rating, x.Mom, x.Redcards, x.SecondsPlayed,
-                x.ProOverall, x.ProOverallStr, x.ProHeight))
+                x.ProOverall, x.ProOverallStr, x.ProHeight, x.Archetypeid))
             .ToList();
         return new CardData { Info = info, Data = data, Rows = rows };
     }
@@ -77,21 +124,63 @@ public sealed class PlayerCardService : IPlayerCardService
     // ------------------------------------------------------------------------------------------ cards
 
     public Task<PlayerCardsDto> GetCardsAsync(
-        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, CancellationToken ct)
+        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, CancellationToken ct) =>
+        GetCardsAsync(clubId, from, to, gameVersion, minMatches, null, null, ct);
+
+    public Task<PlayerCardsDto> GetCardsAsync(
+        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, int? archetypeId, CancellationToken ct) =>
+        GetCardsAsync(clubId, from, to, gameVersion, minMatches, archetypeId, null, ct);
+
+    public Task<PlayerCardsDto> GetCardsAsync(
+        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, int? archetypeId, string? positionGroup,
+        CancellationToken ct) =>
+        GetCardsAsync(clubId, from, to, gameVersion, minMatches, archetypeId, positionGroup, ViewPlayer, ct);
+
+    public const string ViewPlayer = "player", ViewArchetype = "archetype";
+
+    public Task<PlayerCardsDto> GetCardsAsync(
+        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, int? archetypeId, string? positionGroup,
+        string? view, CancellationToken ct) =>
+        GetCardsAsync(clubId, from, to, gameVersion, minMatches, archetypeId, positionGroup, view, null, ct);
+
+    public async Task<PlayerCardsDto> GetCardsAsync(
+        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, int? archetypeId, string? positionGroup,
+        string? view, long? playerEntityId, CancellationToken ct)
     {
+        view = string.Equals(view?.Trim(), ViewArchetype, StringComparison.OrdinalIgnoreCase) ? ViewArchetype : ViewPlayer;
         minMatches = ClampMin(minMatches);
-        return AnalyticsCache.GetOrCreateAsync(_cache, _loader, "player-cards", clubId,
-            $"{from:yyyy-MM-dd}:{to:yyyy-MM-dd}:v={gameVersion}:m={minMatches}", async () =>
+        positionGroup = ArchetypeGroups.Normalize(positionGroup);
+        var catalog = await _archetypes.GetAsync(ct);
+        return await AnalyticsCache.GetOrCreateAsync(_cache, _loader, "player-cards", clubId,
+            $"{from:yyyy-MM-dd}:{to:yyyy-MM-dd}:v={gameVersion}:m={minMatches}:arq={archetypeId}:pos={positionGroup}:view={view}:pl={playerEntityId}:c{catalog.Version}", async () =>
             {
-                var d = await LoadAsync(clubId, from, to, gameVersion, ct);
-                return BuildCards(clubId, from, to, gameVersion, minMatches, d);
+                var d = (await LoadAsync(clubId, from, to, gameVersion, ct)).WithCatalog(catalog);
+                return BuildCards(clubId, from, to, gameVersion, minMatches, d, archetypeId, positionGroup, view, playerEntityId);
             }, ct);
     }
 
+    /// <summary>Arquétipos do período COM a posição aplicada e SEM o filtro de arquétipo, para montar o 2º filtro da tela.</summary>
+    internal static List<AvailableArchetypeDto> AvailableArchetypes(CardData d, string? positionGroup = null, long? playerEntityId = null) =>
+        ArchetypeUsageCalc.AvailableArchetypes(
+            playerEntityId.HasValue ? d.UsageRows.Where(r => r.PlayerId == playerEntityId.Value).ToList() : d.UsageRows, r => r.ArchetypeId, r => r.PlayerId, r => r.Pos, positionGroup, d.Catalog.RefOf);
+
     internal static PlayerCardsDto BuildCards(
-        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, CardData d)
+        long clubId, DateOnly? from, DateOnly? to, int? gameVersion, int minMatches, CardData d,
+        int? archetypeId = null, string? positionGroup = null, string view = ViewPlayer, long? playerEntityId = null)
     {
-        var cards = BuildAllCards(d, null);
+        // opções dos filtros: cada uma calculada sem o PRÓPRIO filtro (e sem os que vêm depois dela na cadeia posição -> arquétipo)
+        var available = AvailableArchetypes(d, positionGroup, playerEntityId);
+        var positions = ArchetypeUsageCalc.AvailablePositionGroups(
+            playerEntityId.HasValue ? d.UsageRows.Where(r => r.PlayerId == playerEntityId.Value).ToList() : d.UsageRows, r => r.Pos);
+        var players = d.UsageRows
+            .GroupBy(r => r.PlayerId)
+            .Select(g => new AvailablePlayerDto { PlayerEntityId = g.Key, Name = d.Data.NameOf(g.Key), Matches = g.Count() })
+            .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ThenBy(p => p.PlayerEntityId).ToList();
+        d = d.WithFilter(archetypeId, positionGroup, playerEntityId);
+        // jogador escolhido: minMatches não esconde as cartas dele (senão um jogador com poucos jogos abre uma grade vazia)
+        var effectiveMin = playerEntityId.HasValue ? 1 : minMatches;
+        var segmented = view == ViewArchetype;
+        var cards = segmented ? BuildSegmentCards(d, null) : BuildAllCards(d, null).Values.ToList();
         return new PlayerCardsDto
         {
             ClubId = clubId,
@@ -101,36 +190,104 @@ public sealed class PlayerCardService : IPlayerCardService
             GameVersion = gameVersion,
             TotalMatches = d.Data.Matches.Count,
             MinMatches = minMatches,
-            Cards = OrderCards(cards.Values.Where(c => c.Matches >= minMatches))
+            Cards = OrderCards(cards.Where(c => c.Matches >= effectiveMin)),
+            PlayerEntityId = playerEntityId,
+            AvailablePlayers = players,
+            ArchetypeId = archetypeId,
+            View = view,
+            PositionGroup = positionGroup,
+            AvailableArchetypes = available,
+            AvailablePositionGroups = positions
         };
     }
 
     internal static List<PlayerCardDto> OrderCards(IEnumerable<PlayerCardDto> cards) => cards
         .OrderByDescending(c => c.Overall).ThenByDescending(c => c.Matches)
         .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ThenBy(c => c.PlayerEntityId)
+        .ThenBy(c => c.SegmentKey, StringComparer.Ordinal)
         .ToList();
 
     /// <summary>Uma carta por jogador que jogou no período (mais, opcionalmente, jogadores sem jogos: carta zerada).</summary>
     internal static Dictionary<long, PlayerCardDto> BuildAllCards(CardData d, IReadOnlyDictionary<long, string>? extraNames)
     {
         var matchesById = d.Data.Matches.ToDictionary(m => m.MatchId);
-        var preAssists = d.Data.Goals.Where(g => g.PreAssistId.HasValue)
-            .GroupBy(g => g.PreAssistId!.Value).ToDictionary(g => g.Key, g => g.Count());
+        var preAssistGoals = d.Data.Goals.Where(g => g.PreAssistId.HasValue).ToLookup(g => g.PreAssistId!.Value);
+        var allRowsByPlayer = d.ScopeRows.ToLookup(r => r.PlayerId);
 
         var result = new Dictionary<long, PlayerCardDto>();
         foreach (var g in d.Rows.GroupBy(r => r.PlayerId))
         {
             var name = d.Data.Names.TryGetValue(g.Key, out var n) ? n
                 : extraNames is not null && extraNames.TryGetValue(g.Key, out var e) ? e : d.Data.NameOf(g.Key);
-            result[g.Key] = BuildCard(g.Key, name, g.ToList(), d.Data.Matches.Count, matchesById,
-                preAssists.TryGetValue(g.Key, out var pa) ? pa : 0);
+            var rows = g.ToList();
+            result[g.Key] = BuildCard(g.Key, name, rows, d.Data.Matches.Count, matchesById,
+                PreAssistsOf(d, preAssistGoals, g.Key, rows), ArchetypeInfo(d, matchesById, allRowsByPlayer[g.Key].ToList(), rows),
+                scoringArchetypeId: d.ArchetypeFilter);
         }
         return result;
     }
 
+    /// <summary>
+    /// <c>view=archetype</c>: uma carta por (jogador, arquétipo), cada uma calculada SÓ com as partidas desse segmento
+    /// (id 0/sem dado forma um segmento com arquétipo nulo e pesos da posição). Overall com os pesos do arquétipo quando o id
+    /// está na tabela de <see cref="CardScoring.ArchetypeWeights"/>. O mínimo de jogos e a regra de provisória valem por segmento.
+    /// </summary>
+    internal static List<PlayerCardDto> BuildSegmentCards(CardData d, IReadOnlyDictionary<long, string>? extraNames)
+    {
+        var matchesById = d.Data.Matches.ToDictionary(m => m.MatchId);
+        var preAssistGoals = d.Data.Goals.Where(g => g.PreAssistId.HasValue).ToLookup(g => g.PreAssistId!.Value);
+        var scopeByPlayer = d.ScopeRows.ToLookup(r => r.PlayerId);
+
+        var result = new List<PlayerCardDto>();
+        foreach (var player in d.Rows.GroupBy(r => r.PlayerId))
+        {
+            var name = d.Data.Names.TryGetValue(player.Key, out var n) ? n
+                : extraNames is not null && extraNames.TryGetValue(player.Key, out var e) ? e : d.Data.NameOf(player.Key);
+            var usages = ArchetypeInfo(d, matchesById, scopeByPlayer[player.Key].ToList(), new List<CardRow>()).Usages;
+            foreach (var segment in player.GroupBy(r => r.ArchetypeId > 0 ? r.ArchetypeId : 0))
+            {
+                var rows = segment.ToList();
+                var matchIds = rows.Select(r => r.MatchId).ToHashSet();
+                var pre = preAssistGoals[player.Key].Count(g => matchIds.Contains(g.MatchId));
+                var archetype = segment.Key > 0 ? d.Catalog.RefOf(segment.Key) : null;
+                var card = BuildCard(player.Key, name, rows, d.Data.Matches.Count, matchesById, pre, (archetype, usages),
+                    scoringArchetypeId: segment.Key > 0 ? segment.Key : null);
+                card.SegmentKey = $"{player.Key}-{segment.Key}";
+                result.Add(card);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Pré-assistências do jogador. Sem filtro de arquétipo vale o total do período (comportamento original); com filtro,
+    /// só as dos gols das partidas em que ele jogou com aquele arquétipo.
+    /// </summary>
+    private static int PreAssistsOf(CardData d, ILookup<long, GoalLinkRow> goals, long playerId, List<CardRow> rows)
+    {
+        if (!d.Filtered) return goals[playerId].Count();
+        var matchIds = rows.Select(r => r.MatchId).ToHashSet();
+        return goals[playerId].Count(g => matchIds.Contains(g.MatchId));
+    }
+
+    private static (ArchetypeRef? Principal, List<ArchetypeUsage> Usages) ArchetypeInfo(
+        CardData d, IReadOnlyDictionary<long, MatchRow> matchesById, List<CardRow> allRows, List<CardRow> rows)
+    {
+        ArchetypeSample Sample(CardRow r) => new(
+            r.ArchetypeId, matchesById.TryGetValue(r.MatchId, out var m) ? m.Timestamp : DateTime.MinValue, r.MatchId,
+            r.Rating, r.ProOverall, r.ProOverallStr, r.Goals, r.Assists);
+
+        var usages = ArchetypeUsageCalc.Usages(allRows.Select(Sample).ToList(), d.Catalog.RefOf);
+        var principal = d.Filtered
+            ? ArchetypeUsageCalc.Principal(ArchetypeUsageCalc.Usages(rows.Select(Sample).ToList(), d.Catalog.RefOf))
+            : ArchetypeUsageCalc.Principal(usages);
+        return (principal, usages);
+    }
+
     internal static PlayerCardDto BuildCard(
         long playerId, string name, List<CardRow> rows, int totalMatches,
-        IReadOnlyDictionary<long, MatchRow> matchesById, int preAssists)
+        IReadOnlyDictionary<long, MatchRow> matchesById, int preAssists,
+        (ArchetypeRef? Principal, List<ArchetypeUsage> Usages)? archetype = null, int? scoringArchetypeId = null)
     {
         var n = rows.Count;
         if (n == 0)
@@ -140,7 +297,9 @@ public sealed class PlayerCardService : IPlayerCardService
             {
                 PlayerEntityId = playerId, Name = name, Position = "", PositionGroup = CardScoring.GroupMidfield,
                 Matches = 0, Minutes = 0, Tier = CardScoring.TierBronze, Overall = 0, Provisional = true,
-                Axes = new PlayerCardAxesDto { Ata = 0 }
+                Axes = new PlayerCardAxesDto { Ata = 0 },
+                Archetype = archetype?.Principal,
+                Archetypes = archetype?.Usages ?? new List<ArchetypeUsage>()
             };
         }
 
@@ -182,7 +341,8 @@ public sealed class PlayerCardService : IPlayerCardService
             Cri = CardScoring.RawCri(apm, preAssists / (double)n),
             Def = CardScoring.RawDef(tackleAcc, tacklesMade / (double)n),
             Imp = CardScoring.RawImp(avgRating, motm / (double)n),
-            Reg = CardScoring.RawReg(totalMatches > 0 ? n / (double)totalMatches : 0, stdDev, n)
+            // Regularidade = só estabilidade das notas das linhas da própria carta (sem presença; ver CardScoring.RawReg)
+            Reg = CardScoring.RawReg(stdDev, n)
         };
 
         // Goleiro: defesas/gols sofridos/jogos sem sofrer gol contam só as partidas jogadas na posição de goleiro
@@ -205,7 +365,11 @@ public sealed class PlayerCardService : IPlayerCardService
             keeper ? null : CardScoring.Score(raw.Ata, n),
             CardScoring.Score(raw.Pas, n), CardScoring.Score(raw.Cri, n), CardScoring.Score(raw.Def, n),
             CardScoring.Score(raw.Imp, n), CardScoring.Score(raw.Reg, n), gol);
-        var overall = CardScoring.Overall(group, axes);
+        // Pesos por arquétipo só quando a carta usa partidas de UM arquétipo (scoringArchetypeId) e o id está na tabela.
+        // provisória (< 10 jogos): nunca elite (teto 84), nos dois overalls
+        var overallByPosition = CardScoring.CapProvisional(CardScoring.Overall(group, axes), n);
+        var byArchetype = CardScoring.UsesArchetypeWeights(scoringArchetypeId, keeper);
+        var overall = byArchetype ? CardScoring.CapProvisional(CardScoring.Overall(group, axes, scoringArchetypeId), n) : overallByPosition;
 
         int? attrOverall = ordered.Select(r => r.ProOverall ?? ParseInt(r.ProOverallStr)).FirstOrDefault(v => v.HasValue);
         int? attrHeight = ordered.Select(r => r.ProHeight).FirstOrDefault(v => v is > 0);
@@ -227,6 +391,8 @@ public sealed class PlayerCardService : IPlayerCardService
             Minutes = (int)Math.Round(rows.Sum(r => (long)r.Seconds) / 60.0, MidpointRounding.AwayFromZero),
             Tier = CardScoring.Tier(overall),
             Overall = overall,
+            OverallByPosition = overallByPosition,
+            Scoring = byArchetype ? CardScoring.ScoringArchetype : CardScoring.ScoringPosition,
             Provisional = CardScoring.IsProvisional(n),
             Axes = new PlayerCardAxesDto
             {
@@ -256,7 +422,9 @@ public sealed class PlayerCardService : IPlayerCardService
             },
             Form = ordered.Take(FormLength).Select(r => r.Rating).ToList(),
             Attributes = attributes,
-            LastPlayedAt = matchesById.TryGetValue(ordered[0].MatchId, out var last) ? last.Timestamp : null
+            LastPlayedAt = matchesById.TryGetValue(ordered[0].MatchId, out var last) ? last.Timestamp : null,
+            Archetype = archetype?.Principal,
+            Archetypes = archetype?.Usages ?? new List<ArchetypeUsage>()
         };
     }
 
@@ -267,18 +435,35 @@ public sealed class PlayerCardService : IPlayerCardService
 
     // ------------------------------------------------------------------------------------------ compare
 
+    public Task<PlayerCompareDto?> GetCompareAsync(
+        long clubId, long a, long b, DateOnly? from, DateOnly? to, int? gameVersion, CancellationToken ct) =>
+        GetCompareAsync(clubId, a, b, from, to, gameVersion, null, null, ct);
+
+    public Task<PlayerCompareDto?> GetCompareAsync(
+        long clubId, long a, long b, DateOnly? from, DateOnly? to, int? gameVersion, int? archetypeId, CancellationToken ct) =>
+        GetCompareAsync(clubId, a, b, from, to, gameVersion, archetypeId, null, ct);
+
+    public Task<PlayerCompareDto?> GetCompareAsync(
+        long clubId, long a, long b, DateOnly? from, DateOnly? to, int? gameVersion, int? archetypeId, string? positionGroup,
+        CancellationToken ct) =>
+        GetCompareAsync(clubId, a, b, from, to, gameVersion, archetypeId, null, null, positionGroup, ct);
+
     public async Task<PlayerCompareDto?> GetCompareAsync(
-        long clubId, long a, long b, DateOnly? from, DateOnly? to, int? gameVersion, CancellationToken ct)
+        long clubId, long a, long b, DateOnly? from, DateOnly? to, int? gameVersion, int? archetypeId, int? archetypeA, int? archetypeB,
+        string? positionGroup, CancellationToken ct)
     {
+        positionGroup = ArchetypeGroups.Normalize(positionGroup);
         var nameA = await ClubPlayerNameAsync(clubId, a, ct);
         var nameB = await ClubPlayerNameAsync(clubId, b, ct);
         if (nameA is null || nameB is null) return null;
 
+        var catalog = await _archetypes.GetAsync(ct);
         return await AnalyticsCache.GetOrCreateAsync(_cache, _loader, "player-compare", clubId,
-            $"a={a}:b={b}:{from:yyyy-MM-dd}:{to:yyyy-MM-dd}:v={gameVersion}", async () =>
+            $"a={a}:b={b}:{from:yyyy-MM-dd}:{to:yyyy-MM-dd}:v={gameVersion}:arq={archetypeId}:aa={archetypeA}:ab={archetypeB}:pos={positionGroup}:c{catalog.Version}", async () =>
             {
-                var d = await LoadAsync(clubId, from, to, gameVersion, ct);
-                return BuildCompare(clubId, a, b, new Dictionary<long, string> { [a] = nameA, [b] = nameB }, d);
+                var d = (await LoadAsync(clubId, from, to, gameVersion, ct)).WithCatalog(catalog);
+                return BuildCompare(clubId, a, b, new Dictionary<long, string> { [a] = nameA, [b] = nameB }, d, archetypeId, positionGroup,
+                    archetypeA, archetypeB);
             }, ct);
     }
 
@@ -296,21 +481,30 @@ public sealed class PlayerCardService : IPlayerCardService
         return !string.IsNullOrWhiteSpace(pro) ? pro!.Trim() : $"Jogador {playerEntityId}";
     }
 
-    internal static PlayerCompareDto BuildCompare(long clubId, long a, long b, IReadOnlyDictionary<long, string> names, CardData d)
+    internal static PlayerCompareDto BuildCompare(
+        long clubId, long a, long b, IReadOnlyDictionary<long, string> names, CardData d, int? archetypeId = null,
+        string? positionGroup = null, int? archetypeA = null, int? archetypeB = null)
     {
-        var cards = BuildAllCards(d, names);
+        // Cada lado pode ser comparado COMO um arquétipo específico (archetypeA/archetypeB); sem eles vale archetypeId para os dois.
+        var archA = archetypeA ?? archetypeId;
+        var archB = archetypeB ?? archetypeId;
+        var dA = d.WithFilter(archA, positionGroup);
+        var dB = archB == archA ? dA : d.WithFilter(archB, positionGroup);
         var matchesById = d.Data.Matches.ToDictionary(m => m.MatchId);
         var preAssists = d.Data.Goals.Where(g => g.PreAssistId.HasValue)
             .GroupBy(g => g.PreAssistId!.Value).ToDictionary(g => g.Key, g => g.Count());
 
-        PlayerCardDto Card(long id) => cards.TryGetValue(id, out var c)
+        PlayerCardDto CardOf(CardData side, Dictionary<long, PlayerCardDto> cards, long id) => cards.TryGetValue(id, out var c)
             ? c
-            : BuildCard(id, names[id], new List<CardRow>(), d.Data.Matches.Count, matchesById, preAssists.GetValueOrDefault(id));
-        var cardA = Card(a);
-        var cardB = Card(b);
+            : BuildCard(id, names[id], new List<CardRow>(), d.Data.Matches.Count, matchesById, preAssists.GetValueOrDefault(id),
+                ArchetypeInfo(side, matchesById, side.ScopeRows.Where(r => r.PlayerId == id).ToList(), new List<CardRow>()));
+        var cardsA = BuildAllCards(dA, names);
+        var cardsB = ReferenceEquals(dA, dB) ? cardsA : BuildAllCards(dB, names);
+        var cardA = CardOf(dA, cardsA, a);
+        var cardB = CardOf(dB, cardsB, b);
 
-        var ratingA = d.Rows.Where(r => r.PlayerId == a).GroupBy(r => r.MatchId).ToDictionary(g => g.Key, g => g.First().Rating);
-        var ratingB = d.Rows.Where(r => r.PlayerId == b).GroupBy(r => r.MatchId).ToDictionary(g => g.Key, g => g.First().Rating);
+        var ratingA = dA.Rows.Where(r => r.PlayerId == a).GroupBy(r => r.MatchId).ToDictionary(g => g.Key, g => g.First().Rating);
+        var ratingB = dB.Rows.Where(r => r.PlayerId == b).GroupBy(r => r.MatchId).ToDictionary(g => g.Key, g => g.First().Rating);
 
         var together = d.Data.Matches.Where(m => ratingA.ContainsKey(m.MatchId) && ratingB.ContainsKey(m.MatchId)).ToList();
         var onlyA = d.Data.Matches.Where(m => ratingA.ContainsKey(m.MatchId) && !ratingB.ContainsKey(m.MatchId)).ToList();
@@ -333,6 +527,10 @@ public sealed class PlayerCardService : IPlayerCardService
         return new PlayerCompareDto
         {
             ClubId = clubId,
+            ArchetypeId = archetypeId,
+            ArchetypeIdA = archA,
+            ArchetypeIdB = archB,
+            PositionGroup = positionGroup,
             A = cardA,
             B = cardB,
             Metrics = BuildMetrics(cardA, cardB),

@@ -138,7 +138,7 @@ public class PlayerCardServiceTests
     }
 
     [Fact]
-    public async Task SmallSamplesAreShrunkTowardFiftyAndAttendanceDrivesRegularity()
+    public async Task SmallSamplesAreShrunkTowardFiftyAndAttendanceDoesNotAffectRegularity()
     {
         using var seed = new AnalyticsSeed();
         for (var i = 0; i < 4; i++)
@@ -147,10 +147,11 @@ public class PlayerCardServiceTests
         var r = await Cards(seed);
 
         // Nota sempre 7,0 (desvio 0 => estabilidade 99).
-        // A: presença 4/4 => raw 99, M=4 => (4x99 + 150)/7 = 78 => 50 + 1,4 x 28 = 89,2 -> 89.
-        // B: 2/4 => raw 74,25, M=2 => (2x74,25 + 150)/5 = 59,7 => 50 + 1,4 x 9,7 = 63,6 -> 64.
+        // Presença NÃO conta: só a estabilidade (raw 99 para os dois). Só o tamanho da amostra (encolhimento) diferencia:
+        // A: M=4 => (4x99 + 150)/7 = 78 => 50 + 1,4 x 28 = 89,2 -> 89.
+        // B: M=2 => (2x99 + 150)/5 = 69,6 => 50 + 1,4 x 19,6 = 77,4 -> 77 (antes 64, quando a presença 2/4 puxava para baixo).
         Assert.Equal(89, r.Cards.Single(c => c.PlayerEntityId == 11).Axes.Reg);
-        Assert.Equal(64, r.Cards.Single(c => c.PlayerEntityId == 12).Axes.Reg);
+        Assert.Equal(77, r.Cards.Single(c => c.PlayerEntityId == 12).Axes.Reg);
     }
 
     // ------------------------------------------------------------------ estatísticas
@@ -250,8 +251,9 @@ public class PlayerCardServiceTests
 
         var c = await CardOf(seed, 11);
 
-        // 0 assistências + 0,5 x 1 pré-assistência por jogo = 0,5 => raw 0,5/0,8 x 99 = 61,875; M=3 => (3x61,875 + 150)/6 = 55,9 => 50 + 1,4 x 5,9 = 58,3 -> 58
-        Assert.Equal(58, c.Axes.Cri);
+        // 0 assistências + 0,6 x 1 pré-assistência por jogo = 0,6 => curva saturante 72,21; M=3 => (3x72,21 + 150)/6 = 61,1 => 50 + 1,4 x 11,1 = 65,5 -> 66
+        // (v2, linear com crédito 0,5: 58)
+        Assert.Equal(66, c.Axes.Cri);
         Assert.Equal(3, c.Stats.PreAssists);
     }
 

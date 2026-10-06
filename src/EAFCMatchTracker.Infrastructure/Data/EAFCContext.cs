@@ -22,6 +22,7 @@ public class EAFCContext : DbContext
     public DbSet<GameVersionEntity> GameVersions { get; set; }
     public DbSet<GoalRegistrationEntity> GoalRegistrations { get; set; }
     public DbSet<GoalRegistrationGoalEntity> GoalRegistrationGoals { get; set; }
+    public DbSet<PlayerArchetypeEntity> PlayerArchetypes { get; set; }
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -294,6 +295,16 @@ public class EAFCContext : DbContext
              .HasForeignKey(x => x.GoalRegistrationId)
              .OnDelete(DeleteBehavior.SetNull);
             l.HasIndex(x => x.GoalRegistrationId);
+        });
+
+        // Catálogo de arquétipos (id da EA -> nome/sigla/grupo editáveis no Admin). Tabela puramente aditiva.
+        modelBuilder.Entity<PlayerArchetypeEntity>(a =>
+        {
+            a.HasKey(x => x.Id);
+            a.Property(x => x.Id).ValueGeneratedNever();
+            a.Property(x => x.Name).HasMaxLength(PlayerArchetypeEntity.MaxNameLength);
+            a.Property(x => x.ShortName).HasMaxLength(PlayerArchetypeEntity.MaxShortNameLength);
+            a.Property(x => x.PositionGroup).HasMaxLength(PlayerArchetypeEntity.MaxPositionGroupLength);
         });
 
         // AppSettings (chave-valor de configuração)

@@ -27,13 +27,14 @@ public class CardScoringTests
     // ------------------------------------------------------------------ eixos (escalas v2)
 
     [Theory]
-    [InlineData(0, 25, 0)]
-    [InlineData(0.8, 55, 99)]
-    [InlineData(0.4, 40, 49.5)]
-    [InlineData(3, 200, 99)]        // clamps
+    // v3: gols pela curva saturante (peso 0,75), precisão de chutes linear 20–60 (peso 0,25)
+    [InlineData(0, 20, 0)]
+    [InlineData(0, 60, 24.75)]               // só a precisão: 0,25 x 99
+    [InlineData(1.12, 20, 74.25)]            // 1,4 x 0,8 = fim da curva: 0,75 x 99
+    [InlineData(0.8, 20, 63.7717185015)]     // 0,75 x 85,029 (0,8 gol/jogo já NÃO satura)
+    [InlineData(0.4, 40, 53.5496122093)]     // 0,75 x 54,899 + 0,25 x 49,5
+    [InlineData(3, 200, 99)]                 // clamps
     [InlineData(-1, 0, 0)]
-    [InlineData(0.8, 25, 59.4)]     // só os gols: 0,6 x 99
-    [InlineData(0, 55, 39.6)]       // só a precisão: 0,4 x 99
     public void AtaMixesGoalsPerMatchAndShotAccuracy(double gpm, double acc, double expected) =>
         Assert.Equal(expected, CardScoring.RawAta(gpm, acc), P);
 
@@ -49,13 +50,15 @@ public class CardScoringTests
         Assert.Equal(expected, CardScoring.RawPas(acc, perMatch), P);
 
     [Theory]
+    // v3: curva saturante sobre assistências + 0,6 x pré-assistências por jogo
     [InlineData(0, 0, 0)]
-    [InlineData(0.8, 0, 99)]
-    [InlineData(0.4, 0, 49.5)]
-    [InlineData(0.2, 0.4, 49.5)]     // 0,2 + 0,5 x 0,4 = 0,4
-    [InlineData(0, 1.6, 99)]         // só pré-assistências: 0,5 x 1,6 = 0,8
+    [InlineData(0.8, 0, 85.0289580020)]
+    [InlineData(0.4, 0, 54.8994829458)]
+    [InlineData(0.2, 0.4, 58.7883333088)]    // 0,2 + 0,6 x 0,4 = 0,44
+    [InlineData(0, 1.6, 92.8487409028)]      // só pré-assistências: 0,6 x 1,6 = 0,96
+    [InlineData(1.12, 0, 99)]                // fim da curva
     [InlineData(2, 0, 99)]
-    public void CriCreditsHalfAPreAssist(double assists, double pre, double expected) =>
+    public void CriCreditsSixtyPercentOfAPreAssist(double assists, double pre, double expected) =>
         Assert.Equal(expected, CardScoring.RawCri(assists, pre), P);
 
     [Theory]
@@ -79,16 +82,17 @@ public class CardScoringTests
         Assert.Equal(expected, CardScoring.RawImp(rating, motmRate), P);
 
     [Theory]
-    [InlineData(1.0, 0.0, 10, 99)]       // presença total e nota estável
-    [InlineData(0.5, 0.75, 10, 49.5)]
-    [InlineData(1.0, 1.5, 10, 49.5)]     // desvio no teto: metade da estabilidade zera
-    [InlineData(1.0, 2.0, 10, 49.5)]     // acima do teto: trava
-    [InlineData(0.0, 0.0, 5, 49.5)]      // nunca presente
-    [InlineData(1.0, 0.0, 1, 74.5)]      // 1 jogo: estabilidade neutra (50)
-    [InlineData(1.0, 1.4, 1, 74.5)]      // o desvio é ignorado com 1 jogo
-    [InlineData(2.0, 0.0, 10, 99)]       // presença > 100% é travada
-    public void RegMixesAttendanceAndRatingStability(double attendance, double stdDev, int matches, double expected) =>
-        Assert.Equal(expected, CardScoring.RawReg(attendance, stdDev, matches), P);
+    [InlineData(0.0, 10, 99)]        // nota perfeitamente estável
+    [InlineData(1.25, 10, 49.5)]     // metade do teto (2,5)
+    [InlineData(1.0, 10, 59.4)]      // σ típico de um clube real
+    [InlineData(2.0, 10, 19.8)]
+    [InlineData(2.5, 10, 0)]         // desvio no teto: zera
+    [InlineData(3.0, 10, 0)]         // acima do teto: trava
+    [InlineData(0.0, 2, 99)]
+    [InlineData(0.0, 1, 50)]         // 1 jogo: neutro
+    [InlineData(1.4, 1, 50)]         // o desvio é ignorado com 1 jogo
+    public void RegIsOnlyRatingStabilityWithNoAttendance(double stdDev, int matches, double expected) =>
+        Assert.Equal(expected, CardScoring.RawReg(stdDev, matches), P);
 
     [Theory]
     [InlineData(40, 3, 0)]
@@ -159,7 +163,7 @@ public class CardScoringTests
             CardScoring.Score(CardScoring.RawCri(apm, pre), m),
             CardScoring.Score(CardScoring.RawDef(tk, tkm), m),
             CardScoring.Score(CardScoring.RawImp(rating, motm), m),
-            CardScoring.Score(CardScoring.RawReg(attendance, sd, m), m), null);
+            CardScoring.Score(CardScoring.RawReg(sd, m), m), null); // `attendance` não entra mais na Regularidade
         var overall = CardScoring.Overall(group, axes);
         return (overall, CardScoring.Tier(overall));
     }
@@ -174,8 +178,9 @@ public class CardScoringTests
 
         Assert.InRange(lMello.Overall, 75, 80);
         Assert.Equal("ouro", lMello.Tier);
-        Assert.InRange(luska.Overall, 80, 84);
-        Assert.Equal("ouro", luska.Tier);
+        // Regularidade recalibrada (teto do desvio 1,5 -> 2,5): o Luska (σ assumido 0,6) sobe de 84 para 86 e vira elite baixa.
+        Assert.InRange(luska.Overall, 84, 88);
+        Assert.Equal("elite", luska.Tier);
         Assert.InRange(zaga.Overall, 68, 72);
         Assert.Equal("prata", zaga.Tier);
         Assert.InRange(pedro.Overall, 55, 64);   // provisório: puxado para o neutro
@@ -190,9 +195,10 @@ public class CardScoringTests
         Assert.Equal("elite", star.Tier);
         Assert.InRange(star.Overall, 85, 95);
 
-        // o Luska (8,3 e 0,64 gol/jogo) é ouro alto, não elite
+        // o Luska (8,3 e 0,64 gol/jogo) fica no limite ouro/elite (85+ só pela Regularidade recalibrada), longe do topo da escala
         var luska = Profile("ATAQUE", 14, 0.64, 69.2, 75.4, 28, 0.36, 0.15, 82.4, 2.0, 8.3, 3 / 14.0, 0.56, 0.6);
-        Assert.NotEqual("elite", luska.Tier);
+        Assert.InRange(luska.Overall, 84, 88);
+        Assert.True(star.Overall > luska.Overall);
 
         // média 7,0 sem muita participação: no máximo prata baixa
         var average = Profile("MEIO", 20, 0.3, 40, 72, 25, 0.25, 0.1, 45, 2.5, 7.0, 0.05, 0.6, 0.8);
@@ -257,22 +263,40 @@ public class CardScoringTests
     [Fact]
     public void WeightsMatchTheSpecPerPosition()
     {
-        Assert.Equal((0.35, 0.15, 0.10, 0.05, 0.25, 0.10, 0.0), CardScoring.Weights("ATAQUE"));
-        Assert.Equal((0.10, 0.25, 0.25, 0.15, 0.15, 0.10, 0.0), CardScoring.Weights("MEIO"));
-        Assert.Equal((0.05, 0.05, 0.15, 0.40, 0.20, 0.15, 0.0), CardScoring.Weights("DEFESA"));
-        Assert.Equal((0.0, 0.0, 0.10, 0.0, 0.25, 0.15, 0.50), CardScoring.Weights("GOLEIRO"));
+        // pesos-base (antes do bônus) intactos
+        Assert.Equal((0.35, 0.15, 0.10, 0.05, 0.25, 0.10, 0.0), CardScoring.BaseWeights("ATAQUE"));
+        Assert.Equal((0.10, 0.25, 0.25, 0.15, 0.15, 0.10, 0.0), CardScoring.BaseWeights("MEIO"));
+        Assert.Equal((0.05, 0.05, 0.15, 0.40, 0.20, 0.15, 0.0), CardScoring.BaseWeights("DEFESA"));
+        Assert.Equal((0.0, 0.0, 0.10, 0.0, 0.25, 0.15, 0.50), CardScoring.BaseWeights("GOLEIRO"));
+
+        // pesos usados: IMP + 0,10 e os demais reescalados por (1 - IMP') / (1 - IMP)
+        foreach (var g in new[] { "ATAQUE", "MEIO", "DEFESA", "GOLEIRO" })
+        {
+            var b = CardScoring.BaseWeights(g);
+            var w = CardScoring.Weights(g);
+            var f = (1 - b.Imp - 0.10) / (1 - b.Imp);
+            Assert.Equal(b.Imp + 0.10, w.Imp, 9);
+            Assert.Equal(b.Ata * f, w.Ata, 9);
+            Assert.Equal(b.Cri * f, w.Cri, 9);
+            Assert.Equal(b.Pas * f, w.Pas, 9);
+            Assert.Equal(b.Def * f, w.Def, 9);
+            Assert.Equal(b.Reg * f, w.Reg, 9);
+            Assert.Equal(b.Gol * f, w.Gol, 9);
+        }
+        Assert.Equal((0.35, 0.25, 0.30, 0.35), (CardScoring.Weights("ATAQUE").Imp, CardScoring.Weights("MEIO").Imp,
+            CardScoring.Weights("DEFESA").Imp, CardScoring.Weights("GOLEIRO").Imp).RoundAll(9));
     }
 
     [Fact]
     public void OverallIsTheRoundedWeightedSumPerPosition()
     {
-        // ATAQUE: .35x80 + .15x40 + .10x60 + .05x20 + .25x70 + .10x50 = 63,5 -> 64
+        // (com o bônus de +0,10 no peso de impacto) ATAQUE: 64,37 -> 64
         Assert.Equal(64, CardScoring.Overall("ATAQUE", new CardAxes(80, 60, 40, 20, 70, 50, null)));
-        // MEIO: .25x80 + .25x60 + .10x40 + .15x20 + .15x70 + .10x50 = 57,5 -> 58
-        Assert.Equal(58, CardScoring.Overall("MEIO", new CardAxes(40, 60, 80, 20, 70, 50, null)));
-        // DEFESA: .40x80 + .15x60 + .20x70 + .15x50 + .05x40 + .05x20 = 65,5 -> 66
+        // MEIO: 58,97 -> 59 (era 57,5 -> 58)
+        Assert.Equal(59, CardScoring.Overall("MEIO", new CardAxes(40, 60, 80, 20, 70, 50, null)));
+        // DEFESA: 66,06 -> 66
         Assert.Equal(66, CardScoring.Overall("DEFESA", new CardAxes(20, 60, 40, 80, 70, 50, null)));
-        // GOLEIRO: .50x80 + .25x70 + .15x50 + .10x60 = 71
+        // GOLEIRO: 70,87 -> 71
         Assert.Equal(71, CardScoring.Overall("GOLEIRO", new CardAxes(null, 60, 0, 0, 70, 50, 80)));
     }
 
@@ -296,8 +320,8 @@ public class CardScoringTests
         Assert.Equal(CardScoring.Overall("ATAQUE", new CardAxes(70, 50, 50, 50, 50, 50, null)),
             CardScoring.Overall("ATAQUE", new CardAxes(70, 50, 50, 50, 50, 50, 99)));
 
-        // Mexer no GOL mexe no overall do goleiro: +20 de GOL = +10 de overall.
-        Assert.Equal(10, CardScoring.Overall("GOLEIRO", new CardAxes(null, 50, 50, 50, 50, 50, 80))
+        // Mexer no GOL mexe no overall do goleiro: +20 de GOL = +8,7 de overall (peso 0,433 com o bônus de impacto; era +10).
+        Assert.Equal(9, CardScoring.Overall("GOLEIRO", new CardAxes(null, 50, 50, 50, 50, 50, 80))
                          - CardScoring.Overall("GOLEIRO", new CardAxes(null, 50, 50, 50, 50, 50, 60)));
     }
 
@@ -311,4 +335,10 @@ public class CardScoringTests
     [InlineData(85, "elite")]
     [InlineData(99, "elite")]
     public void TierThresholds(int overall, string expected) => Assert.Equal(expected, CardScoring.Tier(overall));
+}
+
+internal static class TupleRounding
+{
+    public static (double, double, double, double) RoundAll(this (double A, double B, double C, double D) t, int digits) =>
+        (Math.Round(t.A, digits), Math.Round(t.B, digits), Math.Round(t.C, digits), Math.Round(t.D, digits));
 }

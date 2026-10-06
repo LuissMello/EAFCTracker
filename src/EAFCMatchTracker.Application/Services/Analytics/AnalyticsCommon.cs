@@ -37,7 +37,7 @@ internal sealed class MatchRow
 
 internal sealed record PlayerRow(
     long MatchId, long PlayerId, string? ProName, string Pos, int Goals, int Assists, int PreAssists,
-    double Rating, bool Mom, int RedCards);
+    double Rating, bool Mom, int RedCards, int ArchetypeId = 0, int? ProOverall = null, string? ProOverallStr = null);
 
 internal sealed record SnapshotRow(
     long Id, long MatchId, long ClubId, string? SkillRating, int? CurrentDivision, string? Promotions, string? Relegations);
@@ -314,11 +314,11 @@ internal sealed class ClubAnalyticsLoader
                 .Select(mp => new
                 {
                     mp.MatchId, mp.PlayerEntityId, mp.ProName, mp.Pos, mp.Goals, mp.Assists, mp.PreAssists,
-                    mp.Rating, mp.Mom, mp.Redcards
+                    mp.Rating, mp.Mom, mp.Redcards, mp.Archetypeid, mp.ProOverall, mp.ProOverallStr
                 })
                 .ToListAsync(ct))
             .Select(x => new PlayerRow(x.MatchId, x.PlayerEntityId, x.ProName, x.Pos ?? "", x.Goals, x.Assists,
-                x.PreAssists, double.IsNaN(x.Rating) ? 0 : x.Rating, x.Mom, x.Redcards))
+                x.PreAssists, double.IsNaN(x.Rating) ? 0 : x.Rating, x.Mom, x.Redcards, x.Archetypeid, x.ProOverall, x.ProOverallStr))
             .ToList();
         var playersByMatch = playerRows.GroupBy(p => p.MatchId).ToDictionary(g => g.Key, g => g.ToList());
 

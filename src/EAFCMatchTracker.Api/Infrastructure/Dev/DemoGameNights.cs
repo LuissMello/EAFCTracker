@@ -127,7 +127,7 @@ internal static class DemoGameNights
                     var pre = skipLinks ? 0 : goalPlan.Count(x => x.Pre == p); // sem links, PreAssists = 0 (como no app real)
                     var reds = (redCard && p.Playername == "Marcelo") || (redCard2 && p.Playername == "Sicrano") ? 1 : 0;
                     var rating = 6.0 + 0.55 * g + 0.3 * a + (ours > theirs ? 0.4 : ours < theirs ? -0.4 : 0) - 1.0 * reds + (rnd.NextDouble() - 0.5) * 1.2 + Skill.GetValueOrDefault(p.Playername ?? "");
-                    return new Line(p, DemoDataSeeder.PosOf(p.Playername), g, a, pre, Math.Round(Math.Clamp(rating, 4.5, 9.8), 1), false, reds);
+                    return new Line(p, PosFor(p.Playername, k), g, a, pre, Math.Round(Math.Clamp(rating, 4.5, 9.8), 1), false, reds);
                 }).ToList();
                 var best = lines.OrderByDescending(l => l.Rating).ThenByDescending(l => l.Goals).First();
                 lines = lines.Select(l => l == best ? l with { Mom = true } : l).ToList();
@@ -225,12 +225,51 @@ internal static class DemoGameNights
         }
         if (pos == "goalkeeper") row.Saves = (short)(r.Next(2, 7) + (boost > 0.03 ? 3 : 0)); // shots on target faced = saves + goals conceded
 
+        // Arquétipo por posição (mapa do jogo: GK 1/2, DEF 3-6, MEI 7-10, ATA 11-13), determinístico (sem Random: não mexe nas outras páginas).
+        var ordinal = row.MatchId >= 8_100_000_000L ? row.MatchId - 8_100_000_000L : -1 - (row.MatchId - 8_000_000_000L);
+        row.Archetypeid = ArchetypeFor(name, ordinal, pos);
+
         if (name is not null && Attributes.TryGetValue(name, out var attr))
         {
+            // o overall muda com o arquétipo (quem troca de arquétipo troca de nível): -2 nos arquétipos alternativos
+            var altOverall = (name == "Beltrano" && row.Archetypeid == 11) || (name == "Tiago" && row.Archetypeid == 2) ? -2 : 0;
+            attr = (attr.Overall + altOverall, attr.Height);
             row.ProOverall = attr.Overall;
             row.ProOverallStr = attr.Overall.ToString(CultureInfo.InvariantCulture);
             row.ProHeight = attr.Height;
         }
+    }
+
+    /// <summary>Posição do jogador na partida k das noites: igual à do elenco, exceto a última da noite 3 (Zeca joga de zagueiro).</summary>
+    private static string PosFor(string? name, int k) =>
+        name == "Zeca" && k == 13 ? "defender" : DemoDataSeeder.PosOf(name);
+
+    /// <summary>
+    /// Arquétipo (id da EA) de cada jogador na partida de ordem <paramref name="ordinal"/> (0.. nas noites; negativo = histórico antigo).
+    /// Alguns trocam ao longo do tempo (Beltrano 12→11, Tiago 1→2, Zeca 7→9, Marcelo 3→5), Pedrinho alterna 9/10, uma em cada ~11
+    /// partidas vem sem dado (0, como as partidas antigas reais) e há um id isolado fora do catálogo (30) para testar rótulos padrão.
+    /// </summary>
+    internal static short ArchetypeFor(string? name, long ordinal, string? pos = null)
+    {
+        if (name == "Zeca" && pos == "defender") return 6; // jogou de zagueiro nessa partida: arquétipo de defesa
+        if (Math.Abs(ordinal) % 11 == 3) return 0;
+        if (ordinal is >= 5 and <= 12 && name == "Ciclano") return 30;
+        return (short)(name switch
+        {
+            "Tiago" => ordinal < 18 ? 1 : 2,
+            "Lucas" => 2,
+            "Ciclano" => 4,
+            "Marcelo" => ordinal < 20 ? 3 : 5,
+            "Veterano" => 6,
+            "Fulano" => 8,
+            "Zeca" => ordinal < 11 ? 7 : 9, // troca DENTRO da noite 3 (partidas 9-13)
+            "Pedrinho" => ordinal % 2 == 0 ? 10 : 9,
+            "Rafa" => 7,
+            "Beltrano" => ordinal < 22 ? 12 : 11,
+            "Sicrano" => 13,
+            "Jonas" => 11,
+            _ => 8
+        });
     }
 
     /// <summary>Weighted sampling without replacement (Efraimidis-Spirakis) by each player's play probability.</summary>

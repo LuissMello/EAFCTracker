@@ -16,13 +16,15 @@ public sealed class GameNightService : IGameNightService
     private readonly ClubSessionService _sessions;
     private readonly IMemoryCache _cache;
     private readonly ClubAnalyticsLoader _loader;
+    private readonly IArchetypeCatalog _archetypes;
 
-    public GameNightService(EAFCContext db, ClubSessionService sessions, IMemoryCache cache)
+    public GameNightService(EAFCContext db, ClubSessionService sessions, IMemoryCache cache, IArchetypeCatalog? archetypes = null)
     {
         _db = db;
         _sessions = sessions;
         _cache = cache;
         _loader = new ClubAnalyticsLoader(db);
+        _archetypes = archetypes ?? EmptyArchetypeCatalog.Instance;
     }
 
     private sealed record Night(ClubSession Session, List<MatchRow> Matches)
@@ -55,12 +57,13 @@ public sealed class GameNightService : IGameNightService
 
     public async Task<GameNightDetailDto?> GetNightAsync(long clubId, long sessionId, int? gameVersion, CancellationToken ct)
     {
-        var key = $"s={sessionId}:v={gameVersion}";
+        var catalog = await _archetypes.GetAsync(ct);
+        var key = $"s={sessionId}:v={gameVersion}:c{catalog.Version}";
         var fingerprint = await _loader.FingerprintAsync(clubId, ct);
         var cacheKey = $"analytics:night:{clubId}:{key}:{fingerprint}";
         if (_cache.TryGetValue(cacheKey, out GameNightDetailDto? hit) && hit is not null) return hit;
 
-        var detail = await BuildDetailAsync(clubId, sessionId, gameVersion, ct);
+        var detail = await BuildDetailAsync(clubId, sessionId, gameVersion, catalog, ct);
         if (detail is not null) _cache.Set(cacheKey, detail, AnalyticsCache.Ttl);
         return detail;
     }
@@ -84,7 +87,8 @@ public sealed class GameNightService : IGameNightService
         return nights;
     }
 
-    private async Task<GameNightDetailDto?> BuildDetailAsync(long clubId, long sessionId, int? gameVersion, CancellationToken ct)
+    private async Task<GameNightDetailDto?> BuildDetailAsync(
+        long clubId, long sessionId, int? gameVersion, ArchetypeCatalogSnapshot catalog, CancellationToken ct)
     {
         var nights = await LoadNightsAsync(clubId, gameVersion, ct);
         var idx = nights.FindIndex(n => n.Session.Id == sessionId);
@@ -112,7 +116,7 @@ public sealed class GameNightService : IGameNightService
         var divisions = ms.Where(m => m.OurDivision.HasValue).Select(m => m.OurDivision!.Value).ToList();
 
         var playerRows = ms.SelectMany(m => data.PlayersByMatch.TryGetValue(m.MatchId, out var l) ? l : new List<PlayerRow>()).ToList();
-        var players = BuildPlayers(playerRows, data);
+        var players = BuildPlayers(playerRows, data, catalog);
         var goalsByMatch = data.Goals.ToLookup(g => g.MatchId);
 
         return new GameNightDetailDto
@@ -219,32 +223,79 @@ public sealed class GameNightService : IGameNightService
 
     private static List<PlayerAgg> Aggregate(List<PlayerRow> rows, ClubDataset data) => rows
         .GroupBy(r => r.PlayerId)
-        .Select(g =>
-        {
-            var rated = g.Where(r => r.Rating > 0).ToList();
-            // Posição mais usada na noite; em empate vale a mais recente.
-            var pos = g.Select((r, i) => (r.Pos, i)).Where(x => !string.IsNullOrWhiteSpace(x.Pos))
-                .GroupBy(x => x.Pos)
-                .OrderByDescending(x => x.Count()).ThenByDescending(x => x.Max(y => y.i))
-                .Select(x => x.Key).FirstOrDefault() ?? "";
-            return new PlayerAgg
-            {
-                Id = g.Key,
-                Name = data.NameOf(g.Key),
-                Position = pos,
-                Matches = g.Count(),
-                RatedMatches = rated.Count,
-                RatingSum = rated.Sum(r => r.Rating),
-                Goals = g.Sum(r => r.Goals),
-                Assists = g.Sum(r => r.Assists),
-                PreAssists = g.Sum(r => r.PreAssists),
-                Motm = g.Count(r => r.Mom),
-                RedCards = g.Sum(r => r.RedCards)
-            };
-        })
+        .Select(g => AggOf(g.Key, g.ToList(), data))
         .ToList();
 
-    private static List<GameNightPlayerDto> BuildPlayers(List<PlayerRow> rows, ClubDataset data) => Aggregate(rows, data)
+    private static PlayerAgg AggOf(long id, List<PlayerRow> g, ClubDataset data)
+    {
+        var rated = g.Where(r => r.Rating > 0).ToList();
+        // Posição mais usada (na noite ou no segmento); em empate vale a mais recente.
+        var pos = g.Select((r, i) => (r.Pos, i)).Where(x => !string.IsNullOrWhiteSpace(x.Pos))
+            .GroupBy(x => x.Pos)
+            .OrderByDescending(x => x.Count()).ThenByDescending(x => x.Max(y => y.i))
+            .Select(x => x.Key).FirstOrDefault() ?? "";
+        return new PlayerAgg
+        {
+            Id = id,
+            Name = data.NameOf(id),
+            Position = pos,
+            Matches = g.Count,
+            RatedMatches = rated.Count,
+            RatingSum = rated.Sum(r => r.Rating),
+            Goals = g.Sum(r => r.Goals),
+            Assists = g.Sum(r => r.Assists),
+            PreAssists = g.Sum(r => r.PreAssists),
+            Motm = g.Count(r => r.Mom),
+            RedCards = g.Sum(r => r.RedCards)
+        };
+    }
+
+    /// <summary>
+    /// Uma linha por combinação (arquétipo, grupo da posição) do jogador na noite; vazio quando houve uma só combinação.
+    /// Mais jogos primeiro; empate: a mais recente.
+    /// </summary>
+    private static List<NightPlayerSegmentDto> BuildSegments(
+        long playerId, List<PlayerRow> rows, ClubDataset data, ArchetypeCatalogSnapshot catalog)
+    {
+        var keyed = rows.Select((r, i) => (Row: r, Index: i,
+                Key: (Arch: r.ArchetypeId > 0 ? r.ArchetypeId : 0, Group: ArchetypeUsageCalc.GroupOfPos(r.Pos) ?? "")))
+            .GroupBy(x => x.Key).ToList();
+        if (keyed.Count <= 1) return new List<NightPlayerSegmentDto>();
+
+        return keyed
+            .OrderByDescending(g => g.Count()).ThenByDescending(g => g.Max(x => x.Index))
+            .Select(g =>
+            {
+                var agg = AggOf(playerId, g.Select(x => x.Row).ToList(), data);
+                return new NightPlayerSegmentDto
+                {
+                    Archetype = catalog.Ref(g.Key.Arch),
+                    Position = agg.Position.Length > 0 ? agg.Position : null,
+                    PositionGroup = g.Key.Group.Length > 0 ? g.Key.Group : null,
+                    Matches = agg.Matches,
+                    Goals = agg.Goals,
+                    Assists = agg.Assists,
+                    PreAssists = agg.PreAssists,
+                    AvgRating = agg.AvgRating,
+                    Motm = agg.Motm,
+                    RedCards = agg.RedCards
+                };
+            })
+            .ToList();
+    }
+
+    private static List<GameNightPlayerDto> BuildPlayers(List<PlayerRow> rows, ClubDataset data, ArchetypeCatalogSnapshot catalog)
+    {
+        var usagesByPlayer = rows.GroupBy(r => r.PlayerId)
+            .ToDictionary(g => g.Key, g => ArchetypeUsageCalc.Usages(ArchetypeUsageCalc.SamplesOf(g, data), catalog.RefOf));
+        var segmentsByPlayer = rows.GroupBy(r => r.PlayerId)
+            .ToDictionary(g => g.Key, g => BuildSegments(g.Key, g.ToList(), data, catalog));
+        return BuildPlayerDtos(rows, data, usagesByPlayer, segmentsByPlayer);
+    }
+
+    private static List<GameNightPlayerDto> BuildPlayerDtos(
+        List<PlayerRow> rows, ClubDataset data, Dictionary<long, List<ArchetypeUsage>> usagesByPlayer,
+        Dictionary<long, List<NightPlayerSegmentDto>> segmentsByPlayer) => Aggregate(rows, data)
         .OrderByDescending(p => p.Goals).ThenByDescending(p => p.Assists).ThenByDescending(p => p.AvgRating)
         .ThenByDescending(p => p.Matches).ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
         .Select(p => new GameNightPlayerDto
@@ -258,7 +309,10 @@ public sealed class GameNightService : IGameNightService
             PreAssists = p.PreAssists,
             AvgRating = p.AvgRating,
             Motm = p.Motm,
-            RedCards = p.RedCards
+            RedCards = p.RedCards,
+            Archetypes = usagesByPlayer.TryGetValue(p.Id, out var usages) ? usages : new List<ArchetypeUsage>(),
+            Archetype = usagesByPlayer.TryGetValue(p.Id, out var u2) ? ArchetypeUsageCalc.Principal(u2) : null,
+            Segments = segmentsByPlayer.TryGetValue(p.Id, out var seg) ? seg : new List<NightPlayerSegmentDto>()
         })
         .ToList();
 

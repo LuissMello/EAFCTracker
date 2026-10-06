@@ -18,6 +18,15 @@ public class WrappedDto
     public WrappedRhythmDto Rhythm { get; set; } = new();
     public WrappedProgressionDto Progression { get; set; } = new();
     public List<string> FunFacts { get; set; } = new();
+    public WrappedArchetypesDto Archetypes { get; set; } = new();
+}
+
+/// <summary>Arquétipos no nível do clube: o mais usado, quantas trocas houve (soma dos jogadores) e o uso de cada um.</summary>
+public class WrappedArchetypesDto
+{
+    public ArchetypeUsage? MostUsed { get; set; }
+    public int Switches { get; set; }
+    public List<ArchetypeUsage> List { get; set; } = new();
 }
 
 public class WrappedTotalsDto
@@ -74,6 +83,10 @@ public class WrappedPlayerStatDto
     public string Name { get; set; } = "";
     public double Value { get; set; }
     public int Matches { get; set; }
+
+    /// <summary>Arquétipo principal do jogador no período; nulo sem dado.</summary>
+    public ArchetypeRef? Archetype { get; set; }
+    public List<ArchetypeUsage> Archetypes { get; set; } = new();
 }
 
 public class WrappedPlayersDto

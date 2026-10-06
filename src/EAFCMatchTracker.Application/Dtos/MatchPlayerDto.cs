@@ -33,4 +33,8 @@ public class MatchPlayerDto
     public short Wins { get; set; }
 
     public PlayerMatchStatsDto Stats { get; set; }
+
+    /// <summary>archetypeid da EA nesta partida (0 = sem dado).</summary>
+    public short ArchetypeId { get; set; }
+    public ArchetypeRef? Archetype { get; set; }
 }

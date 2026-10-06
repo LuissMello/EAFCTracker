@@ -22,6 +22,7 @@ public class MatchService : IMatchService
     private readonly EAFCContext _db;
     private readonly IMemoryCache _cache;
     private readonly ILogger<MatchService> _logger;
+    private readonly IArchetypeCatalog _archetypes;
 
     // Cache curto das duas consultas mais pesadas (carregam todas as partidas do clube). A chave inclui
     // "contagem + última partida", então nova partida/exclusão invalida na hora; o TTL cobre as demais
@@ -33,8 +34,10 @@ public class MatchService : IMatchService
         IPlayerRepository playerRepository,
         EAFCContext db,
         IMemoryCache cache,
-        ILogger<MatchService> logger)
+        ILogger<MatchService> logger,
+        IArchetypeCatalog archetypes)
     {
+        _archetypes = archetypes;
         _matchRepository = matchRepository;
         _playerRepository = playerRepository;
         _db = db;
@@ -80,6 +83,7 @@ public class MatchService : IMatchService
             .ToDictionary(g => g.Key, g => g.First());
 
         var playersStats = StatsAggregator.BuildPerPlayer(allPlayers);
+        (await _archetypes.GetAsync(ct)).Apply(playersStats);
         var clubsStats = StatsAggregator.BuildPerClub(allPlayers, clubsById);
 
         var totalRows = allPlayers.Count;
@@ -161,6 +165,7 @@ public class MatchService : IMatchService
         var (overall, players, clubs) = StatsAggregator.BuildLimitedForClub(clubId, matches);
         if (players.Count == 0) return new FullMatchStatisticsDto();
 
+        (await _archetypes.GetAsync(ct)).Apply(players);
         return new FullMatchStatisticsDto { Overall = overall, Players = players, Clubs = clubs };
     }
 
@@ -187,6 +192,7 @@ public class MatchService : IMatchService
         if (sessionDates is not null)
             matches = matches.Where(m => sessionDates.ContainsKey(m.MatchId)).ToList();
 
+        var catalog = await _archetypes.GetAsync(ct);
         return matches
             .GroupBy(m => sessionDates is null
                 ? BrazilTime.ToLocal(m.Timestamp).Date
@@ -201,6 +207,7 @@ public class MatchService : IMatchService
                     .ToList();
 
                 var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(dayPlayers);
+                catalog.Apply(playerStats);
                 var clubStats = StatsAggregator.BuildSingleClubFromPlayers(dayPlayers, "Clubes agrupados");
 
                 var (gf, ga) = ComputeGoalsForAgainst(dayMatches, ids);
@@ -290,6 +297,7 @@ public class MatchService : IMatchService
             matches = matches.Where(m => sessionDates.ContainsKey(m.MatchId)).ToList();
         if (matches.Count == 0) return new List<PlayerStatisticsByDayDto>();
 
+        var catalog = await _archetypes.GetAsync(ct);
         return matches
             .GroupBy(m => sessionDates is null
                 ? BrazilTime.ToLocal(m.Timestamp).Date
@@ -309,7 +317,7 @@ public class MatchService : IMatchService
 
                     var statsList = StatsAggregator.BuildPerPlayerMergedByGlobalId(playerMatchPlayers);
                     var stat = statsList.FirstOrDefault();
-                    if (stat != null) statsPerMatch.Add(stat);
+                    if (stat != null) { catalog.Apply(stat); statsPerMatch.Add(stat); }
                 }
 
                 return new PlayerStatisticsByDayDto
@@ -536,6 +544,7 @@ public class MatchService : IMatchService
             .ToListAsync(ct);
 
         var playerStats = StatsAggregator.BuildPerPlayerMergedByGlobalId(players);
+        (await _archetypes.GetAsync(ct)).Apply(playerStats);
         var clubStatsSingle = StatsAggregator.BuildSingleClubFromPlayers(players, clubName: "Clubes agrupados");
 
         return new
@@ -803,6 +812,8 @@ public class MatchService : IMatchService
         var q = _db.Matches.AsNoTracking().OrderByDescending(m => m.Timestamp).ThenByDescending(m => m.MatchId);
         var total = await q.CountAsync(ct);
         var items = await q.Skip((page - 1) * pageSize).Take(pageSize).ToMatchDtoListAsync(ct);
+        var catalog = await _archetypes.GetAsync(ct);
+        foreach (var p in items.SelectMany(i => i.Players ?? new List<MatchPlayerDto>())) catalog.Apply(p);
 
         return new PagedResult<MatchDto>
         {
@@ -820,10 +831,16 @@ public class MatchService : IMatchService
     {
         _logger.LogInformation("MatchService.GetMatchByIdAsync matchId={MatchId}", matchId);
 
-        return await _db.Matches
+        var dto = await _db.Matches
             .AsNoTracking()
             .Where(m => m.MatchId == matchId)
             .FirstMatchDtoOrDefaultAsync(ct);
+        if (dto?.Players is not null)
+        {
+            var catalog = await _archetypes.GetAsync(ct);
+            foreach (var p in dto.Players) catalog.Apply(p);
+        }
+        return dto;
     }
 
     public async Task<MatchStatisticsResponseDto?> GetMatchStatisticsByIdAsync(long matchId, CancellationToken ct)
@@ -840,6 +857,7 @@ public class MatchService : IMatchService
 
         var overall = StatsAggregator.BuildOverallForSingleMatch(match.MatchPlayers);
         var playersStats = StatsAggregator.BuildPerPlayer(match.MatchPlayers, includeDisconnected: true);
+        (await _archetypes.GetAsync(ct)).Apply(playersStats);
         var clubsStats = StatsAggregator.BuildPerClub(match.MatchPlayers, match.Clubs.ToDictionary(c => c.ClubId));
 
         return new MatchStatisticsResponseDto
@@ -874,11 +892,13 @@ public class MatchService : IMatchService
     {
         _logger.LogInformation("MatchService.GetPlayerStatisticsByMatchAndPlayerAsync matchId={MatchId}, playerId={PlayerId}", matchId, playerId);
 
-        return await _db.MatchPlayers
+        var dto = await _db.MatchPlayers
             .AsNoTracking()
             .Where(mp => mp.MatchId == matchId && mp.PlayerEntityId == playerId)
             .ProjectPlayerStats()
             .FirstOrDefaultAsync(ct);
+        (await _archetypes.GetAsync(ct)).Apply(dto);
+        return dto;
     }
 
     public async Task DeleteMatchAsync(long matchId, CancellationToken ct)

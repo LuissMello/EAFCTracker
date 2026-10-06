@@ -49,6 +49,28 @@ public abstract class AnalyticsControllerBase : ControllerBase
         return null;
     }
 
+    /// <summary>archetypeId (opcional): inteiro de 1 a 255. Ausente/vazio = sem filtro; outro valor gera erro 400.</summary>
+    protected ObjectResult? ParseArchetypeId(string? raw, out int? archetypeId)
+    {
+        archetypeId = null;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) || v < 1 || v > 255)
+            return BadInput("archetypeId deve ser um número inteiro entre 1 e 255.");
+        archetypeId = v;
+        return null;
+    }
+
+    /// <summary>positionGroup (opcional): ATAQUE, MEIO, DEFESA ou GOLEIRO (sem diferenciar maiúsculas). Ausente/vazio = sem filtro.</summary>
+    protected ObjectResult? ParsePositionGroup(string? raw, out string? positionGroup)
+    {
+        positionGroup = null;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        positionGroup = ArchetypeGroups.Normalize(raw);
+        return positionGroup is null
+            ? BadInput($"positionGroup deve ser um de: {string.Join(", ", ArchetypeGroups.All)}.")
+            : null;
+    }
+
     /// <summary>from/to como datas locais yyyy-MM-dd; from &gt; to ou intervalo maior que 5 anos geram erro 400.</summary>
     protected ObjectResult? ParseRange(string? rawFrom, string? rawTo, out DateOnly? from, out DateOnly? to)
     {

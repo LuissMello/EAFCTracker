@@ -1,9 +1,184 @@
+using EAFCMatchTracker.Application.Services.Analytics;
 using EAFCMatchTracker.Domain.Entities;
 
 namespace EAFCMatchTracker.Application.Dtos
 {
     public static class StatsAggregator
     {
+        /// <summary>
+        /// Preenche arquétipo principal e uso por arquétipo no recorte. As referências saem SEM catálogo
+        /// (rótulo "Arquétipo #id"); os serviços as trocam pelas do catálogo (ArchetypeCatalogSnapshot.Apply).
+        /// </summary>
+        private static void FillArchetypes(PlayerStatisticsDto dto, IEnumerable<MatchPlayerEntity> rows)
+        {
+            var samples = rows.Select(ArchetypeSample.From).ToList();
+            var usages = ArchetypeUsageCalc.Usages(samples, ArchetypeUsageCalc.Unresolved);
+            dto.Archetypes = usages;
+            dto.Archetype = ArchetypeUsageCalc.Principal(usages);
+            dto.ArchetypeId = (short)(dto.Archetype?.Id ?? 0);
+        }
+
+        /// <summary>
+        /// Segmentos: uma linha por combinação (arquétipo, grupo da posição) quando o jogador tem MAIS de uma no recorte
+        /// (vazio caso contrário). Cada segmento reaproveita a MESMA agregação da linha principal sobre o subconjunto de
+        /// partidas (sem segmentos aninhados), então somas e médias nunca divergem. Mais jogos primeiro; empate: o mais recente.
+        /// </summary>
+        private static void FillSegments(PlayerStatisticsDto dto, List<MatchPlayerEntity> rows, Func<List<MatchPlayerEntity>, PlayerStatisticsDto> build)
+        {
+            static (int Arch, string Group) KeyOf(MatchPlayerEntity r) =>
+                (r.Archetypeid > 0 ? r.Archetypeid : 0, ArchetypeUsageCalc.GroupOfPos(r.Pos) ?? "");
+
+            var groups = rows.GroupBy(KeyOf).ToList();
+            if (groups.Count <= 1) return;
+
+            dto.Segments = groups
+                .OrderByDescending(g => g.Count())
+                .ThenByDescending(g => g.Max(r => r.Match?.Timestamp ?? DateTime.MinValue))
+                .ThenBy(g => g.Key.Arch).ThenBy(g => g.Key.Group, StringComparer.Ordinal)
+                .Select(g =>
+                {
+                    var list = g.ToList();
+                    var seg = build(list);
+                    // posição mais usada no segmento; empate: a mais recente
+                    seg.Position = list.Where(r => !string.IsNullOrWhiteSpace(r.Pos))
+                        .OrderByDescending(r => r.Match?.Timestamp ?? DateTime.MinValue).ThenByDescending(r => r.MatchId)
+                        .GroupBy(r => r.Pos).OrderByDescending(x => x.Count()).Select(x => x.Key).FirstOrDefault();
+                    seg.PositionGroup = g.Key.Group.Length > 0 ? g.Key.Group : null;
+                    return seg;
+                })
+                .ToList();
+        }
+
+        private static PlayerStatisticsDto BuildPlayerRow(long gkey, List<MatchPlayerEntity> g, bool withSegments)
+        {
+        var player = g.First().Player;
+        var matchPlayer = g.First();
+
+        int matches = g.Count();
+        int goals = g.Sum(p => p.Goals);
+        int shots = g.Sum(p => p.Shots);
+        int passesMade = g.Sum(p => p.Passesmade);
+        int passAttempts = g.Sum(p => p.Passattempts);
+        int tacklesMade = g.Sum(p => p.Tacklesmade);
+        int tackleAttempts = g.Sum(p => p.Tackleattempts);
+        int wins = g.Sum(p => p.Wins);
+        int losses = g.Sum(p => p.Losses);
+        int draws = matches - wins - losses;
+        int preAssists = g.Sum(p => p.PreAssists);
+        int assists = g.Sum(p => p.Assists);
+
+        var dto = new PlayerStatisticsDto
+        {
+            PlayerId = gkey,
+            PlayerEntityId = gkey,
+            PlayerName = player?.Playername ?? "Unknown",
+            ClubId = player?.ClubId ?? 0,
+            ProHeight = matchPlayer.ProHeight,
+            ProName = matchPlayer.ProName,
+            ProOverallStr = matchPlayer.ProOverallStr,
+
+            MatchesPlayed = matches,
+            TotalGoals = goals,
+            TotalAssists = assists,
+            TotalPreAssists = preAssists,
+            TotalShots = shots,
+            TotalPassesMade = passesMade,
+            TotalPassAttempts = passAttempts,
+            TotalTacklesMade = tacklesMade,
+            TotalTackleAttempts = tackleAttempts,
+            TotalWins = wins,
+            TotalLosses = losses,
+            TotalDraws = draws,
+            TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
+            TotalRedCards = g.Sum(p => p.Redcards),
+            TotalSaves = g.Sum(p => p.Saves),
+            HasGoalkeeperAppearance = g.Any(p => p.Pos == "GK" || p.Cleansheetsgk > 0 || p.Saves > 0),
+            TotalMom = g.Count(p => p.Mom),
+            TotalGoalsConceded = g.Sum(p => p.Goalsconceded),
+
+            AvgRating = g.Average(p => p.Rating),
+            PassAccuracyPercent = passAttempts > 0 ? passesMade * 100.0 / passAttempts : 0,
+            TackleSuccessPercent = tackleAttempts > 0 ? tacklesMade * 100.0 / tackleAttempts : 0,
+            GoalAccuracyPercent = shots > 0 ? goals * 100.0 / shots : 0,
+            WinPercent = matches > 0 ? wins * 100.0 / matches : 0,
+
+            // Para "uma partida", isso reflete exatamente o estado; para agregados, indica se em ALGUMA partida ele desconectou.
+            Disconnected = g.Any(p => p.Disconnected),
+
+            TotalSecondsPlayed = g.Sum(p => (int)p.SecondsPlayed),
+            TotalGameTime      = g.Sum(p => (int)p.GameTime),
+        };
+        FillArchetypes(dto, g);
+        if (withSegments) FillSegments(dto, g, rows => BuildPlayerRow(gkey, rows, false));
+        return dto;
+        }
+
+        private static PlayerStatisticsDto BuildMergedPlayerRow(long gkey, List<MatchPlayerEntity> g, bool withSegments)
+        {
+        // Pega um "representante" — o mais recente por MatchId (maior MatchId) para nome/club fallback
+        var repr = g.OrderByDescending(x => x.MatchId).First();
+        var matchRepr = repr.Match;
+
+        int matches = g.Count();
+        int goals = g.Sum(p => p.Goals);
+        int shots = g.Sum(p => p.Shots);
+        int passesMade = g.Sum(p => p.Passesmade);
+        int passAttempts = g.Sum(p => p.Passattempts);
+        int tacklesMade = g.Sum(p => p.Tacklesmade);
+        int tackleAttempts = g.Sum(p => p.Tackleattempts);
+        int wins = g.Sum(p => p.Wins);
+        int losses = g.Sum(p => p.Losses);
+        int draws = Math.Max(0, matches - wins - losses);
+        int assists = g.Sum(p => p.Assists);
+        int preAssists = g.Sum(p => p.PreAssists);
+
+        var dto = new PlayerStatisticsDto
+        {
+            PlayerId = repr.Player.PlayerId,
+            PlayerEntityId = repr.PlayerEntityId,
+            PlayerName = repr.Player.Playername ?? "Unknown",
+            // Como estamos agrupando clubes, não faz sentido devolver um único ClubId real.
+            // Use 0 (ou null se seu DTO permitir) apenas para preencher o contrato atual.
+            ClubId = 0,
+            Date = matchRepr.Timestamp,
+
+            ProName = repr.ProName,
+            ProOverallStr = repr.ProOverallStr,
+            ProHeight = repr.ProHeight,
+
+            MatchesPlayed = matches,
+            TotalGoals = goals,
+            TotalAssists = assists,
+            TotalPreAssists  = preAssists,
+            TotalShots = shots,
+            TotalPassesMade = passesMade,
+            TotalPassAttempts = passAttempts,
+            TotalTacklesMade = tacklesMade,
+            TotalTackleAttempts = tackleAttempts,
+            TotalWins = wins,
+            TotalLosses = losses,
+            TotalDraws = draws,
+            TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
+            TotalRedCards = g.Sum(p => p.Redcards),
+            TotalSaves = g.Sum(p => p.Saves),
+            HasGoalkeeperAppearance = g.Any(p => p.Pos == "GK" || p.Cleansheetsgk > 0 || p.Saves > 0),
+            TotalMom = g.Count(p => p.Mom),
+            TotalGoalsConceded = g.Sum(p => p.Goalsconceded),
+
+            AvgRating = g.Any() ? g.Average(p => p.Rating) : 0,
+            PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
+            TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
+            GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0,
+            WinPercent = matches > 0 ? (wins * 100.0) / matches : 0,
+
+            TotalSecondsPlayed = g.Sum(p => (int)p.SecondsPlayed),
+            TotalGameTime      = g.Sum(p => (int)p.GameTime),
+        };
+        FillArchetypes(dto, g);
+        if (withSegments) FillSegments(dto, g, rows => BuildMergedPlayerRow(gkey, rows, false));
+        return dto;
+        }
+
         public static MatchStatisticsDto BuildOverallForSingleMatch(ICollection<MatchPlayerEntity> players)
         {
             if (players == null || players.Count == 0)
@@ -95,63 +270,7 @@ namespace EAFCMatchTracker.Application.Dtos
                 .GroupBy(p => p.PlayerEntityId)
                 .Select(g =>
                 {
-                    var player = g.First().Player;
-                    var matchPlayer = g.First();
-
-                    int matches = g.Count();
-                    int goals = g.Sum(p => p.Goals);
-                    int shots = g.Sum(p => p.Shots);
-                    int passesMade = g.Sum(p => p.Passesmade);
-                    int passAttempts = g.Sum(p => p.Passattempts);
-                    int tacklesMade = g.Sum(p => p.Tacklesmade);
-                    int tackleAttempts = g.Sum(p => p.Tackleattempts);
-                    int wins = g.Sum(p => p.Wins);
-                    int losses = g.Sum(p => p.Losses);
-                    int draws = matches - wins - losses;
-                    int preAssists = g.Sum(p => p.PreAssists);
-                    int assists = g.Sum(p => p.Assists);
-
-                    return new PlayerStatisticsDto
-                    {
-                        PlayerId = g.Key,
-                        PlayerEntityId = g.Key,
-                        PlayerName = player?.Playername ?? "Unknown",
-                        ClubId = player?.ClubId ?? 0,
-                        ProHeight = matchPlayer.ProHeight,
-                        ProName = matchPlayer.ProName,
-                        ProOverallStr = matchPlayer.ProOverallStr,
-
-                        MatchesPlayed = matches,
-                        TotalGoals = goals,
-                        TotalAssists = assists,
-                        TotalPreAssists = preAssists,
-                        TotalShots = shots,
-                        TotalPassesMade = passesMade,
-                        TotalPassAttempts = passAttempts,
-                        TotalTacklesMade = tacklesMade,
-                        TotalTackleAttempts = tackleAttempts,
-                        TotalWins = wins,
-                        TotalLosses = losses,
-                        TotalDraws = draws,
-                        TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
-                        TotalRedCards = g.Sum(p => p.Redcards),
-                        TotalSaves = g.Sum(p => p.Saves),
-                        HasGoalkeeperAppearance = g.Any(p => p.Pos == "GK" || p.Cleansheetsgk > 0 || p.Saves > 0),
-                        TotalMom = g.Count(p => p.Mom),
-                        TotalGoalsConceded = g.Sum(p => p.Goalsconceded),
-
-                        AvgRating = g.Average(p => p.Rating),
-                        PassAccuracyPercent = passAttempts > 0 ? passesMade * 100.0 / passAttempts : 0,
-                        TackleSuccessPercent = tackleAttempts > 0 ? tacklesMade * 100.0 / tackleAttempts : 0,
-                        GoalAccuracyPercent = shots > 0 ? goals * 100.0 / shots : 0,
-                        WinPercent = matches > 0 ? wins * 100.0 / matches : 0,
-
-                        // Para "uma partida", isso reflete exatamente o estado; para agregados, indica se em ALGUMA partida ele desconectou.
-                        Disconnected = g.Any(p => p.Disconnected),
-
-                        TotalSecondsPlayed = g.Sum(p => (int)p.SecondsPlayed),
-                        TotalGameTime      = g.Sum(p => (int)p.GameTime),
-                    };
+                    return BuildPlayerRow(g.Key, g.ToList(), true);
                 })
                 .OrderByDescending(p => p.MatchesPlayed)
                 .ToList();
@@ -437,65 +556,7 @@ namespace EAFCMatchTracker.Application.Dtos
                 .GroupBy(p => p.Player.PlayerId) // <-- chave global do jogador
                 .Select(g =>
                 {
-                    // Pega um "representante" — o mais recente por MatchId (maior MatchId) para nome/club fallback
-                    var repr = g.OrderByDescending(x => x.MatchId).First();
-                    var matchRepr = repr.Match;
-
-                    int matches = g.Count();
-                    int goals = g.Sum(p => p.Goals);
-                    int shots = g.Sum(p => p.Shots);
-                    int passesMade = g.Sum(p => p.Passesmade);
-                    int passAttempts = g.Sum(p => p.Passattempts);
-                    int tacklesMade = g.Sum(p => p.Tacklesmade);
-                    int tackleAttempts = g.Sum(p => p.Tackleattempts);
-                    int wins = g.Sum(p => p.Wins);
-                    int losses = g.Sum(p => p.Losses);
-                    int draws = Math.Max(0, matches - wins - losses);
-                    int assists = g.Sum(p => p.Assists);
-                    int preAssists = g.Sum(p => p.PreAssists);
-
-                    return new PlayerStatisticsDto
-                    {
-                        PlayerId = repr.Player.PlayerId,
-                        PlayerEntityId = repr.PlayerEntityId,
-                        PlayerName = repr.Player.Playername ?? "Unknown",
-                        // Como estamos agrupando clubes, não faz sentido devolver um único ClubId real.
-                        // Use 0 (ou null se seu DTO permitir) apenas para preencher o contrato atual.
-                        ClubId = 0,
-                        Date = matchRepr.Timestamp,
-
-                        ProName = repr.ProName,
-                        ProOverallStr = repr.ProOverallStr,
-                        ProHeight = repr.ProHeight,
-
-                        MatchesPlayed = matches,
-                        TotalGoals = goals,
-                        TotalAssists = assists,
-                        TotalPreAssists  = preAssists,
-                        TotalShots = shots,
-                        TotalPassesMade = passesMade,
-                        TotalPassAttempts = passAttempts,
-                        TotalTacklesMade = tacklesMade,
-                        TotalTackleAttempts = tackleAttempts,
-                        TotalWins = wins,
-                        TotalLosses = losses,
-                        TotalDraws = draws,
-                        TotalCleanSheets = g.Sum(p => p.Cleansheetsany),
-                        TotalRedCards = g.Sum(p => p.Redcards),
-                        TotalSaves = g.Sum(p => p.Saves),
-                        HasGoalkeeperAppearance = g.Any(p => p.Pos == "GK" || p.Cleansheetsgk > 0 || p.Saves > 0),
-                        TotalMom = g.Count(p => p.Mom),
-                        TotalGoalsConceded = g.Sum(p => p.Goalsconceded),
-
-                        AvgRating = g.Any() ? g.Average(p => p.Rating) : 0,
-                        PassAccuracyPercent = passAttempts > 0 ? (passesMade * 100.0) / passAttempts : 0,
-                        TackleSuccessPercent = tackleAttempts > 0 ? (tacklesMade * 100.0) / tackleAttempts : 0,
-                        GoalAccuracyPercent = shots > 0 ? (goals * 100.0) / shots : 0,
-                        WinPercent = matches > 0 ? (wins * 100.0) / matches : 0,
-
-                        TotalSecondsPlayed = g.Sum(p => (int)p.SecondsPlayed),
-                        TotalGameTime      = g.Sum(p => (int)p.GameTime),
-                    };
+                    return BuildMergedPlayerRow(g.Key, g.ToList(), true);
                 })
                 // opcional: ordenar por partidas (ou por gols, etc.)
                 .OrderByDescending(p => p.MatchesPlayed)
