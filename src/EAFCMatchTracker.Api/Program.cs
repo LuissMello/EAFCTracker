@@ -366,6 +366,8 @@ app.UseRateLimiter();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health");
+// Liveness sem banco (keep-alive do modo ao vivo): não acorda o Neon
+app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = _ => false });
 
 app.Run();
 

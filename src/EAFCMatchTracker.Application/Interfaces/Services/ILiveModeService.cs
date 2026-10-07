@@ -20,4 +20,16 @@ public interface ILiveModeService
     Task<LiveStatus> GetStatusAsync(CancellationToken ct);
     Task<LiveStatus> SetAsync(bool enabled, CancellationToken ct);
     Task<FetchSchedule> GetScheduleAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Descarta o cache (TTL de 5 min) do agendamento e acorda quem espera em <see cref="WaitForChangeAsync"/>.
+    /// Chamado de forma síncrona por TODA escrita em AppSettings neste processo (AppSettingRepository.UpsertAsync).
+    /// </summary>
+    void Invalidate();
+
+    /// <summary>
+    /// Espera até <paramref name="timeout"/> ou até alguém chamar <see cref="Invalidate"/> (configuração mudou). Devolve true se foi
+    /// acordado por uma mudança. Usado pelo loop de busca para cortar o sono longo quando o modo ao vivo é ligado.
+    /// </summary>
+    Task<bool> WaitForChangeAsync(TimeSpan timeout, CancellationToken ct);
 }

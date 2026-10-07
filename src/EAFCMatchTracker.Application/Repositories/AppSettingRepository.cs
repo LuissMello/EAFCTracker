@@ -1,4 +1,5 @@
 using EAFCMatchTracker.Application.Interfaces.Repositories;
+using EAFCMatchTracker.Application.Interfaces.Services;
 using EAFCMatchTracker.Domain.Entities;
 using EAFCMatchTracker.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -8,10 +9,13 @@ namespace EAFCMatchTracker.Application.Repositories;
 public class AppSettingRepository : IAppSettingRepository
 {
     private readonly EAFCContext _db;
+    private readonly ILiveModeService? _live;
 
-    public AppSettingRepository(EAFCContext db)
+    /// <param name="live">Opcional: recebe a invalidação do cache do agendamento a cada escrita (ponto único de escrita de AppSettings).</param>
+    public AppSettingRepository(EAFCContext db, ILiveModeService? live = null)
     {
         _db = db;
+        _live = live;
     }
 
     public Task<List<AppSettingEntity>> GetAllAsync(CancellationToken ct) =>
@@ -29,5 +33,6 @@ public class AppSettingRepository : IAppSettingRepository
             existing.Value = value;
 
         await _db.SaveChangesAsync(ct);
+        _live?.Invalidate(); // síncrono: o cache do agendamento nunca fica velho para quem acabou de gravar
     }
 }
