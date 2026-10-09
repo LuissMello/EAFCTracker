@@ -76,6 +76,9 @@ public sealed class OpponentSearchService : IOpponentSearchService
                 ClubId = h.ClubId,
                 Name = e?.Name ?? h.Name,
                 CurrentDivision = e?.CurrentDivision ?? h.Division,
+                Division = e?.CurrentDivision ?? h.Division,
+                SkillRating = e?.SkillRating,
+                TeamId = TeamIdOf(e?.CrestAssetId ?? h.CrestAssetId),
                 ReputationTier = e?.ReputationTier,
                 CrestAssetId = e?.CrestAssetId ?? h.CrestAssetId,
                 CustomCrestAssetId = e?.CustomCrestAssetId ?? h.CustomCrestAssetId,
@@ -98,6 +101,9 @@ public sealed class OpponentSearchService : IOpponentSearchService
                 ClubId = e.ClubId,
                 Name = e.Name,
                 CurrentDivision = e.CurrentDivision,
+                Division = e.CurrentDivision ?? known?.Division,
+                SkillRating = e.SkillRating,
+                TeamId = TeamIdOf(e.CrestAssetId ?? known?.CrestAssetId),
                 ReputationTier = e.ReputationTier,
                 CrestAssetId = e.CrestAssetId ?? known?.CrestAssetId,
                 CustomCrestAssetId = e.CustomCrestAssetId ?? known?.CustomCrestAssetId,
@@ -116,6 +122,9 @@ public sealed class OpponentSearchService : IOpponentSearchService
             Results = results.Take(take).ToList()
         };
     }
+
+    private static long? TeamIdOf(string? crestAssetId) =>
+        long.TryParse(crestAssetId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) && id > 0 ? id : null;
 
     private static OpponentSearchRecordDto? ToRecord(EaClubInfo e)
     {

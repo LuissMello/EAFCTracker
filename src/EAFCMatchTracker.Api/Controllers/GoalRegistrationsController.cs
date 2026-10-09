@@ -102,6 +102,30 @@ public class GoalRegistrationsController : ControllerBase
             return NoContent();
         });
 
+    // POST /api/goal-registrations/{id}/finish   -> 200 registro (idempotente; Linked: sem alteração; Expired: 409)
+    [HttpPost("{id:long}/finish")]
+    [EnableRateLimiting(WritePolicy)]
+    public Task<IActionResult> Finish(long id, CancellationToken ct) =>
+        ExecuteAsync(async () => Ok(await _service.FinishAsync(id, ct)));
+
+    // POST /api/goal-registrations/{id}/reopen   -> 200 registro (só Pending; senão 409)
+    [HttpPost("{id:long}/reopen")]
+    [EnableRateLimiting(WritePolicy)]
+    public Task<IActionResult> Reopen(long id, CancellationToken ct) =>
+        ExecuteAsync(async () => Ok(await _service.ReopenAsync(id, ct)));
+
+    // POST /api/goal-registrations/{id}/confirm-suggestion   -> 200 registro vinculado (400 se os gols não batem; 409 sem sugestão)
+    [HttpPost("{id:long}/confirm-suggestion")]
+    [EnableRateLimiting(WritePolicy)]
+    public Task<IActionResult> ConfirmSuggestion(long id, CancellationToken ct) =>
+        ExecuteAsync(async () => Ok(await _service.ConfirmSuggestionAsync(id, ct)));
+
+    // POST /api/goal-registrations/{id}/dismiss-suggestion   -> 200 registro Pending (idempotente)
+    [HttpPost("{id:long}/dismiss-suggestion")]
+    [EnableRateLimiting(WritePolicy)]
+    public Task<IActionResult> DismissSuggestion(long id, CancellationToken ct) =>
+        ExecuteAsync(async () => Ok(await _service.DismissSuggestionAsync(id, ct)));
+
     // POST /api/goal-registrations/{id}/goals
     [HttpPost("{id:long}/goals")]
     [EnableRateLimiting(WritePolicy)]

@@ -108,7 +108,8 @@ public sealed class EaClubSearchClient : IEaClubSearchClient
                 item.Int("gamesPlayed"), item.Int("wins"), item.Int("ties"), item.Int("losses"),
                 item.Int("goals"), item.Int("goalsAgainst"), item.Int("promotions"), item.Int("relegations"),
                 string.IsNullOrWhiteSpace(crest) ? null : crest,
-                string.IsNullOrWhiteSpace(customCrest) ? null : customCrest));
+                string.IsNullOrWhiteSpace(customCrest) ? null : customCrest,
+                item.Int("skillRating") ?? item.Int("skillrating") ?? info?.Int("skillRating")));
         }
 
         return list;

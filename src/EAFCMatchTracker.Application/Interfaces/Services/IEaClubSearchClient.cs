@@ -17,7 +17,8 @@ public sealed record EaClubInfo(
     int? Promotions,
     int? Relegations,
     string? CrestAssetId,
-    string? CustomCrestAssetId = null);
+    string? CustomCrestAssetId = null,
+    int? SkillRating = null);
 
 /// <summary>Resultado da busca por prefixo na EA. <see cref="Available"/> = false quando a EA falhou/está bloqueada.</summary>
 public sealed record EaSearchResult(bool Available, IReadOnlyList<EaClubInfo> Items)

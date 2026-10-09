@@ -19,6 +19,9 @@ public sealed class GoalRegistrationLinker : IGoalRegistrationLinker
 
     private const string UniqueViolationSqlState = "23505";
 
+    /// <summary>Um registro Pending não finalizado só passa a receber sugestão de partida depois deste tempo.</summary>
+    public static readonly TimeSpan SuggestAfter = TimeSpan.FromMinutes(20);
+
     // Serializa execuções dentro do processo (ciclo de busca x criação/edição pela API). Entre processos, valem os
     // índices únicos filtrados (Matches.GoalRegistrationId e GoalRegistrations.MatchId).
     private static readonly SemaphoreSlim Gate = new(1, 1);
@@ -65,7 +68,7 @@ public sealed class GoalRegistrationLinker : IGoalRegistrationLinker
             // 1) Higiene
             var orphans = await _db.GoalRegistrations
                 .Where(r => (r.Status == GoalRegistrationStatus.Linked || r.Status == GoalRegistrationStatus.NeedsReview)
-                            && r.MatchId == null)
+                            && r.MatchId == null && r.SuggestedMatchId == null) // NeedsReview com sugestão não é órfão
                 .ToListAsync(ct);
             foreach (var r in orphans)
             {
@@ -75,6 +78,24 @@ public sealed class GoalRegistrationLinker : IGoalRegistrationLinker
                 r.ReviewNote = null;
             }
             if (orphans.Count > 0) await _db.SaveChangesAsync(ct);
+
+            // Sugestões cuja partida foi apagada ou já foi vinculada a outro registro deixam de valer
+            var withSuggestion = await _db.GoalRegistrations
+                .Where(r => r.SuggestedMatchId != null && r.MatchId == null && r.Status == GoalRegistrationStatus.NeedsReview)
+                .ToListAsync(ct);
+            var staleSuggestions = 0;
+            foreach (var r in withSuggestion)
+            {
+                var sid = r.SuggestedMatchId!.Value;
+                var free = await _db.Matches.AnyAsync(m => m.MatchId == sid && m.GoalRegistrationId == null, ct)
+                           && !await _db.GoalRegistrations.AnyAsync(o => o.Id != r.Id && o.MatchId == sid, ct);
+                if (free) continue;
+                r.SuggestedMatchId = null;
+                r.Status = GoalRegistrationStatus.Pending;
+                r.ReviewNote = null;
+                staleSuggestions++;
+            }
+            if (staleSuggestions > 0) await _db.SaveChangesAsync(ct);
 
             var cutoff = now.AddDays(-expireDays);
             var stale = await _db.GoalRegistrations
@@ -114,6 +135,16 @@ public sealed class GoalRegistrationLinker : IGoalRegistrationLinker
                 }
             }
 
+            try
+            {
+                review += await SuggestPassAsync(clubId, opponentClubId, window, now, ct);
+            }
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            {
+                _logger.LogInformation(ex, "Sugestão de partida ignorada (violação de unicidade).");
+                _db.ChangeTracker.Clear();
+            }
+
             if (linked + review + expired > 0)
                 _logger.LogInformation(
                     "Linker de gols: {Linked} vinculado(s), {Review} para revisão, {Expired} expirado(s).", linked, review, expired);
@@ -124,6 +155,72 @@ public sealed class GoalRegistrationLinker : IGoalRegistrationLinker
         {
             Gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Passagem de SUGESTÃO (depois do pareamento normal): para cada registro Pending finalizado, ou criado há mais de
+    /// <see cref="SuggestAfter"/>, sem sugestão e sem partida livre do MESMO adversário na janela, procura partidas livres do
+    /// clube (nenhum registro as referencia nem sugere) dentro da janela do registro cujo placar do nosso lado seja igual ao nº
+    /// de gols registrado (regra de FindFailureAsync: o total do clube não pode ser menor). Se houver EXATAMENTE uma e nenhum
+    /// outro registro Pending do clube competir por ela (mesmo adversário dela, ou mesmo nº de gols, na janela), marca
+    /// SuggestedMatchId e NeedsReview. Nunca vincula sozinho.
+    /// </summary>
+    private async Task<int> SuggestPassAsync(long? clubId, long? opponentClubId, TimeSpan window, DateTime now, CancellationToken ct)
+    {
+        var pendingQuery = _db.GoalRegistrations.Include(r => r.Goals)
+            .Where(r => r.Status == GoalRegistrationStatus.Pending && r.MatchId == null);
+        if (clubId.HasValue) pendingQuery = pendingQuery.Where(r => r.ClubId == clubId.Value);
+        var allPending = await pendingQuery.ToListAsync(ct); // inclui concorrentes de outros adversários
+
+        var eligible = allPending
+            .Where(r => r.SuggestedMatchId == null
+                        && (r.FinishedAt != null || r.CreatedAt < now - SuggestAfter)
+                        && (!opponentClubId.HasValue || r.OpponentClubId == opponentClubId.Value))
+            .OrderBy(r => r.CreatedAt).ThenBy(r => r.Id)
+            .ToList();
+        if (eligible.Count == 0) return 0;
+
+        var suggested = 0;
+        foreach (var reg in eligible)
+        {
+            var from = reg.CreatedAt - _slack;
+            var to = reg.CreatedAt + window;
+            var free = await _db.Matches.Include(m => m.Clubs).ThenInclude(c => c.Details)
+                .Where(m => m.GoalRegistrationId == null && m.Timestamp >= from && m.Timestamp <= to
+                            && m.Clubs.Any(c => c.ClubId == reg.ClubId)
+                            && !_db.GoalRegistrations.Any(o => o.MatchId == m.MatchId || o.SuggestedMatchId == m.MatchId))
+                .ToListAsync(ct);
+
+            // há partida livre do adversário informado: é caso do pareamento normal, não de sugestão
+            if (free.Any(m => m.Clubs.Any(c => c.ClubId == reg.OpponentClubId))) continue;
+
+            var goalsCount = reg.Goals.Count;
+            var candidates = free
+                .Where(m => m.Clubs.FirstOrDefault(c => c.ClubId == reg.ClubId)?.Goals == goalsCount
+                            && m.Clubs.Any(c => c.ClubId != reg.ClubId)
+                            && m.MatchId != reg.DismissedMatchId)
+                .Where(m =>
+                {
+                    var opponent = m.Clubs.First(c => c.ClubId != reg.ClubId).ClubId;
+                    return !allPending.Any(o => o.Id != reg.Id && o.ClubId == reg.ClubId
+                                                && InWindow(m.Timestamp, o.CreatedAt, window)
+                                                && (o.OpponentClubId == opponent || o.Goals.Count == goalsCount));
+                })
+                .ToList();
+            if (candidates.Count != 1) continue;
+
+            var match = candidates[0];
+            var real = match.Clubs.First(c => c.ClubId != reg.ClubId);
+            var realName = string.IsNullOrWhiteSpace(real.Details?.Name) ? $"Clube {real.ClubId}" : real.Details!.Name;
+            reg.SuggestedMatchId = match.MatchId;
+            reg.Status = GoalRegistrationStatus.NeedsReview;
+            reg.ReviewNote = $"Possível partida contra {realName} — confirme para vincular.";
+            suggested++;
+            _logger.LogInformation("Registro de gols {Id}: sugerida a partida {MatchId} (contra {Opponent}).", reg.Id, match.MatchId, realName);
+        }
+
+        if (suggested > 0) await _db.SaveChangesAsync(ct);
+        return suggested;
     }
 
     public async Task<GoalRegistrationStatus> ReapplyAsync(GoalRegistrationEntity reg, CancellationToken ct = default)

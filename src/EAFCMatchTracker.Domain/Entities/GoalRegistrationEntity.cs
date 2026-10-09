@@ -31,5 +31,20 @@ public class GoalRegistrationEntity
 
     public string? ReviewNote { get; set; }
 
+    /// <summary>
+    /// UTC. O usuário encerrou o registro ("Finalizar"): ele deixa de ser o registro em andamento (GET current) e passa a
+    /// ser elegível à sugestão de partida do linker. Pode ser desfeito (reopen) enquanto Pending.
+    /// </summary>
+    public DateTime? FinishedAt { get; set; }
+
+    /// <summary>
+    /// Partida SUGERIDA pelo linker (outro adversário, mesmo nº de gols, dentro da janela) para confirmação humana.
+    /// Sem FK de propósito: se a partida for apagada, o linker limpa a sugestão. Nunca vincula sozinho.
+    /// </summary>
+    public long? SuggestedMatchId { get; set; }
+
+    /// <summary>Última sugestão recusada (dismiss): o linker não volta a sugerir a mesma partida.</summary>
+    public long? DismissedMatchId { get; set; }
+
     public ICollection<GoalRegistrationGoalEntity> Goals { get; set; } = new List<GoalRegistrationGoalEntity>();
 }

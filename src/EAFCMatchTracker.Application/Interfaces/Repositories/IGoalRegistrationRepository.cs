@@ -4,6 +4,10 @@ namespace EAFCMatchTracker.Application.Interfaces.Repositories;
 
 public sealed record KnownPlayerRow(long Id, long ClubId, string? Name);
 
+/// <summary>Partida vista do nosso clube: adversário REAL e placar do nosso lado.</summary>
+public sealed record MatchSummaryRow(
+    long MatchId, DateTime PlayedAt, long OpponentClubId, string OpponentName, int OurGoals, int TheirGoals);
+
 public sealed record RosterRow(long PlayerEntityId, int MatchesPlayed, DateTime LastPlayedAt);
 
 public interface IGoalRegistrationRepository
@@ -13,6 +17,10 @@ public interface IGoalRegistrationRepository
 
     Task<List<GoalRegistrationEntity>> ListAsync(
         long? clubId, IReadOnlyCollection<GoalRegistrationStatus> statuses, DateTime? createdFromUtc, int limit, CancellationToken ct);
+
+    /// <summary>Resumo (adversário real + placar) das partidas pedidas, do ponto de vista de cada clube; chave = (matchId, clubId).</summary>
+    Task<Dictionary<(long MatchId, long ClubId), MatchSummaryRow>> GetMatchSummariesAsync(
+        IReadOnlyCollection<(long MatchId, long ClubId)> pairs, CancellationToken ct);
 
     Task<GoalRegistrationEntity?> GetCurrentAsync(long clubId, DateTime createdFromUtc, CancellationToken ct);
 

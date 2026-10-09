@@ -109,6 +109,97 @@ public sealed class GoalRegistrationService : IGoalRegistrationService
         return reg is null ? null : (await ToDtosAsync(new[] { reg }, ct))[0];
     }
 
+    // ───────────────────────── finalizar / sugestão ─────────────────────────
+
+    public async Task<GoalRegistrationResponseDto> FinishAsync(long id, CancellationToken ct)
+    {
+        var reg = await _repo.GetWithGoalsAsync(id, ct) ?? throw new KeyNotFoundException($"Registro {id} não encontrado.");
+        if (reg.Status == GoalRegistrationStatus.Expired)
+            throw new DomainConflictException("Este registro expirou e não pode mais ser finalizado.");
+        if (reg.Status == GoalRegistrationStatus.Linked)
+            return (await ToDtosAsync(new[] { reg }, ct))[0]; // já concluído: devolve sem alterar
+
+        if (reg.FinishedAt is null)
+        {
+            reg.FinishedAt = _time.GetUtcNow().UtcDateTime;
+            await _repo.SaveChangesAsync(ct);
+            _logger.LogInformation("Registro de gols {Id} finalizado.", reg.Id);
+        }
+        // finalizado + sem partida do adversário informado: o linker já pode sugerir uma partida
+        return await LinkAndRenderAsync(reg, ct);
+    }
+
+    public async Task<GoalRegistrationResponseDto> ReopenAsync(long id, CancellationToken ct)
+    {
+        var reg = await _repo.GetWithGoalsAsync(id, ct) ?? throw new KeyNotFoundException($"Registro {id} não encontrado.");
+        if (reg.Status != GoalRegistrationStatus.Pending)
+            throw new DomainConflictException("Só é possível reabrir um registro pendente.");
+
+        if (reg.FinishedAt is not null)
+        {
+            reg.FinishedAt = null;
+            await _repo.SaveChangesAsync(ct);
+            _logger.LogInformation("Registro de gols {Id} reaberto.", reg.Id);
+        }
+        return (await ToDtosAsync(new[] { reg }, ct))[0];
+    }
+
+    public async Task<GoalRegistrationResponseDto> ConfirmSuggestionAsync(long id, CancellationToken ct)
+    {
+        var reg = await _repo.GetWithGoalsAsync(id, ct) ?? throw new KeyNotFoundException($"Registro {id} não encontrado.");
+        if (reg.Status is GoalRegistrationStatus.Expired or GoalRegistrationStatus.Linked)
+            throw new DomainConflictException("Este registro não aceita mais uma partida sugerida.");
+        if (reg.SuggestedMatchId is not { } matchId || reg.MatchId.HasValue)
+            throw new DomainConflictException("Este registro não tem partida sugerida.");
+
+        var match = await _repo.GetMatchAsync(matchId, ct)
+                    ?? throw new DomainConflictException("A partida sugerida não existe mais.");
+        if (match.GoalRegistrationId is not null && match.GoalRegistrationId != reg.Id)
+            throw new DomainConflictException("A partida sugerida já foi vinculada a outro registro.");
+
+        var summary = (await _repo.GetMatchSummariesAsync(new[] { (matchId, reg.ClubId) }, ct)).GetValueOrDefault((matchId, reg.ClubId))
+                      ?? throw new DomainConflictException("A partida sugerida não tem dados dos dois clubes.");
+
+        // Mesma validação das edições manuais: se os gols não batem com a partida, nada é alterado
+        var failure = await _linker.ValidateGoalsAsync(reg.ClubId, matchId, OrderedLines(reg), ct);
+        if (failure is not null) throw new DomainValidationException(failure);
+
+        reg.OpponentClubId = summary.OpponentClubId;
+        reg.OpponentName = summary.OpponentName.Length > MaxOpponentNameLength
+            ? summary.OpponentName[..MaxOpponentNameLength]
+            : summary.OpponentName;
+        reg.SuggestedMatchId = null;
+        reg.DismissedMatchId = null;
+        reg.MatchId = matchId;
+        reg.ReviewNote = null;
+
+        await _linker.ReapplyAsync(reg, ct); // cria os MatchGoalLinks e define Linked (ou NeedsReview se houver vínculos manuais)
+        await _repo.SaveChangesAsync(ct);
+        _logger.LogInformation("Sugestão confirmada: registro {Id} -> partida {MatchId} ({Status}).", reg.Id, matchId, reg.Status);
+        return (await ToDtosAsync(new[] { reg }, ct))[0];
+    }
+
+    public async Task<GoalRegistrationResponseDto> DismissSuggestionAsync(long id, CancellationToken ct)
+    {
+        var reg = await _repo.GetWithGoalsAsync(id, ct) ?? throw new KeyNotFoundException($"Registro {id} não encontrado.");
+        if (reg.Status is GoalRegistrationStatus.Expired or GoalRegistrationStatus.Linked)
+            throw new DomainConflictException("Este registro não tem sugestão a recusar.");
+
+        if (reg.SuggestedMatchId is { } suggested)
+        {
+            reg.DismissedMatchId = suggested;
+            reg.SuggestedMatchId = null;
+            if (!reg.MatchId.HasValue)
+            {
+                reg.Status = GoalRegistrationStatus.Pending;
+                reg.ReviewNote = null;
+            }
+            await _repo.SaveChangesAsync(ct);
+            _logger.LogInformation("Sugestão de partida {MatchId} recusada no registro {Id}.", suggested, reg.Id);
+        }
+        return (await ToDtosAsync(new[] { reg }, ct))[0];
+    }
+
     // ───────────────────────── edição do registro inteiro ─────────────────────────
 
     public async Task<GoalRegistrationResponseDto> UpdateAsync(long id, UpdateGoalRegistrationRequest request, CancellationToken ct)
@@ -287,6 +378,14 @@ public sealed class GoalRegistrationService : IGoalRegistrationService
         var reg = await _repo.GetWithGoalsAsync(id, ct) ?? throw new KeyNotFoundException($"Registro {id} não encontrado.");
         if (reg.Status == GoalRegistrationStatus.Expired)
             throw new DomainConflictException("Este registro expirou e não pode mais ser editado.");
+
+        // Editar os gols/adversário invalida a sugestão (ela depende do nº de gols); o linker sugere de novo se couber.
+        if (reg.SuggestedMatchId.HasValue && !reg.MatchId.HasValue)
+        {
+            reg.SuggestedMatchId = null;
+            reg.Status = GoalRegistrationStatus.Pending;
+            reg.ReviewNote = null;
+        }
         return reg;
     }
 
@@ -424,9 +523,24 @@ public sealed class GoalRegistrationService : IGoalRegistrationService
 
         string? Name(long? id) => id.HasValue ? (names.TryGetValue(id.Value, out var n) ? n : $"#{id.Value}") : null;
 
+        var suggestedPairs = regs.Where(r => r.SuggestedMatchId.HasValue).Select(r => (r.SuggestedMatchId!.Value, r.ClubId)).ToList();
+        var suggested = await _repo.GetMatchSummariesAsync(suggestedPairs, ct);
+
         return regs.Select(r =>
         {
             var goals = r.Goals.OrderBy(g => g.Order).ThenBy(g => g.Id).ToList();
+            GoalRegistrationSuggestedMatchDto? suggestion = null;
+            if (r.SuggestedMatchId.HasValue && suggested.TryGetValue((r.SuggestedMatchId.Value, r.ClubId), out var s))
+                suggestion = new GoalRegistrationSuggestedMatchDto
+                {
+                    MatchId = s.MatchId,
+                    PlayedAt = s.PlayedAt,
+                    OpponentClubId = s.OpponentClubId,
+                    OpponentName = s.OpponentName,
+                    OurGoals = s.OurGoals,
+                    TheirGoals = s.TheirGoals,
+                    GoalsMatch = s.OurGoals == goals.Count
+                };
             return new GoalRegistrationResponseDto
             {
                 Id = r.Id,
@@ -440,6 +554,8 @@ public sealed class GoalRegistrationService : IGoalRegistrationService
                 MatchId = r.MatchId,
                 LinkedAt = r.LinkedAt,
                 ReviewNote = r.ReviewNote,
+                FinishedAt = r.FinishedAt,
+                SuggestedMatch = suggestion,
                 GoalsCount = goals.Count,
                 Goals = goals.Select(g => new GoalRegistrationLineResponseDto
                 {

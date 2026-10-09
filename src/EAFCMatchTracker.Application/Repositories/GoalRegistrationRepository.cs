@@ -29,10 +29,35 @@ public class GoalRegistrationRepository : IGoalRegistrationRepository
     public Task<GoalRegistrationEntity?> GetCurrentAsync(long clubId, DateTime createdFromUtc, CancellationToken ct) =>
         _db.GoalRegistrations.AsNoTracking().Include(r => r.Goals)
             .Where(r => r.ClubId == clubId
-                        && (r.Status == GoalRegistrationStatus.Pending || r.Status == GoalRegistrationStatus.NeedsReview)
+                        // em andamento = Pending e ainda não finalizado (Finalizar libera a tela para um novo registro)
+                        && r.Status == GoalRegistrationStatus.Pending && r.FinishedAt == null
                         && r.CreatedAt >= createdFromUtc)
             .OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id)
             .FirstOrDefaultAsync(ct);
+
+    public async Task<Dictionary<(long MatchId, long ClubId), MatchSummaryRow>> GetMatchSummariesAsync(
+        IReadOnlyCollection<(long MatchId, long ClubId)> pairs, CancellationToken ct)
+    {
+        var result = new Dictionary<(long, long), MatchSummaryRow>();
+        if (pairs.Count == 0) return result;
+
+        var matchIds = pairs.Select(p => p.MatchId).Distinct().ToList();
+        var rows = await _db.MatchClubs.AsNoTracking()
+            .Where(c => matchIds.Contains(c.MatchId))
+            .Select(c => new { c.MatchId, c.ClubId, c.Goals, Name = c.Details != null ? c.Details.Name : null, c.Match.Timestamp })
+            .ToListAsync(ct);
+
+        foreach (var (matchId, clubId) in pairs.Distinct())
+        {
+            var ours = rows.FirstOrDefault(r => r.MatchId == matchId && r.ClubId == clubId);
+            var theirs = rows.FirstOrDefault(r => r.MatchId == matchId && r.ClubId != clubId);
+            if (ours is null || theirs is null) continue;
+            result[(matchId, clubId)] = new MatchSummaryRow(
+                matchId, DateTime.SpecifyKind(ours.Timestamp, DateTimeKind.Utc), theirs.ClubId,
+                string.IsNullOrWhiteSpace(theirs.Name) ? $"Clube {theirs.ClubId}" : theirs.Name!, ours.Goals, theirs.Goals);
+        }
+        return result;
+    }
 
     public void Add(GoalRegistrationEntity registration) => _db.GoalRegistrations.Add(registration);
 

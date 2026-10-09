@@ -31,6 +31,20 @@ public class GoalRegistrationLineResponseDto
     public string? PreAssistName { get; set; }
 }
 
+/// <summary>Partida sugerida pelo linker para confirmação (o adversário REAL dela, placar do nosso lado).</summary>
+public class GoalRegistrationSuggestedMatchDto
+{
+    public long MatchId { get; set; }
+    public DateTime PlayedAt { get; set; }
+    public long OpponentClubId { get; set; }
+    public string OpponentName { get; set; } = string.Empty;
+    public int OurGoals { get; set; }
+    public int TheirGoals { get; set; }
+
+    /// <summary>True quando <see cref="OurGoals"/> é igual ao nº de gols registrados.</summary>
+    public bool GoalsMatch { get; set; }
+}
+
 public class GoalRegistrationResponseDto
 {
     public long Id { get; set; }
@@ -48,6 +62,12 @@ public class GoalRegistrationResponseDto
     public long? MatchId { get; set; }
     public DateTime? LinkedAt { get; set; }
     public string? ReviewNote { get; set; }
+
+    /// <summary>UTC. Preenchido quando o usuário finalizou o registro (POST /{id}/finish).</summary>
+    public DateTime? FinishedAt { get; set; }
+
+    /// <summary>Partida sugerida (outro adversário) aguardando confirmação; nula sem sugestão.</summary>
+    public GoalRegistrationSuggestedMatchDto? SuggestedMatch { get; set; }
     public int GoalsCount { get; set; }
     public List<GoalRegistrationLineResponseDto> Goals { get; set; } = new();
 }
@@ -82,6 +102,15 @@ public class OpponentSearchItemDto
     public string Name { get; set; } = string.Empty;
     public int? CurrentDivision { get; set; }
     public int? ReputationTier { get; set; }
+
+    /// <summary>teamId do clube (mesmo valor de <see cref="CrestAssetId"/>, como número) para distinguir clubes de nome parecido.</summary>
+    public long? TeamId { get; set; }
+
+    /// <summary>Divisão atual (alias de <see cref="CurrentDivision"/>).</summary>
+    public int? Division { get; set; }
+
+    /// <summary>Skill rating, quando a busca da EA o traz; nulo caso contrário.</summary>
+    public int? SkillRating { get; set; }
 
     /// <summary>Identificador do escudo no CDN da EA = teamId do clube (o mesmo que o resto do site usa).</summary>
     public string? CrestAssetId { get; set; }

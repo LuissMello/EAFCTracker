@@ -118,6 +118,12 @@ namespace EAFCMatchTracker.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("DismissedMatchId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("FinishedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("LinkedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -142,6 +148,9 @@ namespace EAFCMatchTracker.Migrations
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
+
+                    b.Property<long?>("SuggestedMatchId")
+                        .HasColumnType("bigint");
 
                     b.HasKey("Id");
 
